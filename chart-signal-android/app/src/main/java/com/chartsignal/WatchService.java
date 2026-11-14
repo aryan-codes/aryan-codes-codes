@@ -195,12 +195,24 @@ public class WatchService extends Service {
                 Math.round(boxL * capW), Math.round(boxT * capH),
                 Math.round(boxR * capW), Math.round(boxB * capH), MAX_POINTS);
             if (c == null) {
-                main.post(() -> setWait("no chart line found in the box", null, null));
+                main.post(() -> setWait("no chart line found in the box", "Long-press the dot to redraw the chart box."));
                 return;
             }
             double dt = spanSec * c.coverage / c.n;       // seconds per sample
             int h = (int) Math.max(1, Math.round(expirySec / dt));
             Predictor.Result r = Predictor.analyze(c.p, c.n, h, minHit);
+            if (r.hMax > 0 && h > r.hMax) {
+                int seen = (int) Math.round(c.n * dt);
+                int maxExp = (int) Math.floor(r.hMax * dt);
+                String msg = "expiry " + (int) expirySec + "s > max " + maxExp + "s";
+                String more = "Box shows ~" + seen + "s of price (" + Math.round(c.coverage * 100)
+                    + "% of its width has candles). Expiry " + (int) expirySec + "s needs ~"
+                    + (int) Math.ceil(expirySec * c.n / (double) r.hMax) + "s of visible price.\n"
+                    + "Fix: zoom the chart out so more candles show, or shorten the expiry. "
+                    + "Also check 'Seconds shown across the chart box' matches the time axis.";
+                main.post(() -> setWait(msg, more));
+                return;
+            }
             main.post(() -> show(r, c, dt));
         } catch (Throwable t) {
             String m = String.valueOf(t.getMessage());
@@ -327,11 +339,11 @@ public class WatchService extends Service {
         refreshDetail();
     }
 
-    private void setWait(String why, double[] p, double[] f) {
+    private void setWait(String why, String more) {
         if (dot == null) return;
         paintDot(Color.WHITE, "WAIT", 0xFF202020);
         headline = why;
-        detail = "Long-press the dot to redraw the chart box.";
+        detail = more;
         refreshDetail();
     }
 

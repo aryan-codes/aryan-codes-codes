@@ -15,6 +15,7 @@ public final class Predictor {
         public String sindyInfo = "";
         public double[] forecastPath;        // SINDy path, price units, length h
         public int h;
+        public int hMax;                     // longest horizon this chart can support
     }
 
     public static final int MIN_POINTS = 80;
@@ -29,12 +30,16 @@ public final class Predictor {
     public static Result analyze(double[] p, int n, int h, double minHit) {
         Result r = new Result();
         r.h = h;
+        // the backtest needs a training prefix (net: L + h + 20 windows), then at least h of spread
+        // between backtest points, then h points to score the last one
+        r.hMax = (n - 1 - TinyMlp.L - 20) / 3;
         if (n < MIN_POINTS) { r.why = "chart too short (" + n + " pts)"; return r; }
-        if (h < 1 || h > n / 4) { r.why = "expiry too long for visible chart"; return r; }
+        if (h < 1 || h > r.hMax) { r.why = "expiry too long for visible chart"; return r; }
 
         // walk-forward backtest: fit on data up to each origin, predict h steps ahead
-        int start = Math.max(MIN_POINTS / 2 + TinyMlp.L, (int) (n * 0.55));
+        int minTrain = Math.max(40, TinyMlp.L + h + 20);
         int end = n - 1 - h;
+        int start = Math.min(end, Math.max(minTrain, (int) (n * 0.5)));
         if (end > start) {
             for (int k = 0; k < ORIGINS; k++) {
                 int o = start + (int) Math.round((double) k * (end - start) / (ORIGINS - 1));
@@ -60,6 +65,13 @@ public final class Predictor {
         r.nnDelta = nn == null ? 0 : nn.predict(p, n, h);
         SindyPi.Model m = SindyPi.fit(p, n);
         r.sindyInfo = m == null ? "SINDy-PI: no fit" : m.describe();
+
+        // backtest points closer together than the horizon share most of their outcome, so a
+        // crowded backtest is worth less: raise the bar in proportion
+        double spread = Math.max(0, end - start);
+        double need = minHit;
+        if (spread < 2.0 * h) need = Math.min(0.95, minHit + 0.15 * (1 - spread / (2.0 * h)));
+        minHit = need;
 
         int sd = (int) Math.signum(r.sindyDelta), nd = (int) Math.signum(r.nnDelta);
         double rate = r.btAgree == 0 ? 0 : (double) r.btHits / r.btAgree;
