@@ -32,6 +32,9 @@ public final class Stitcher {
     private final long keepMs;
     private final double[] scaleTrail = new double[30];
     private int scaleCount = 0;
+    private int misses = 0;
+    /** Consecutive reads that may fail to match before a new segment is started. */
+    static final int MAX_MISSES = 4;
     public double lastR2 = Double.NaN;      // fit quality of the last join (for the log)
     public double lastRms = Double.NaN;     // overlap error, fraction of box height
     public boolean lastJoined = false;
@@ -42,7 +45,12 @@ public final class Stitcher {
 
     public int size() { return hist.size(); }
 
-    static final double[] SCALES = {0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.18, 1.25, 1.33};
+    /** Time-scale corrections tried around the learned one: 0.4x to 2.5x in ~7% steps, so even a
+     *  badly wrong "seconds across the box" setting is found and corrected. */
+    static final double[] SCALES = new double[29];
+    static {
+        for (int i = 0; i < SCALES.length; i++) SCALES[i] = Math.pow(2.5 / 0.4, (double) i / (SCALES.length - 1)) * 0.4;
+    }
     /** Only the newest part of the overlap is fitted: the time error from a wrong span grows with age. */
     static final double OVERLAP_FRACTION = 0.35;
 
@@ -68,9 +76,11 @@ public final class Stitcher {
         double base = learnedScale();
         for (double sc0 : SCALES) {
             double sc = sc0 * base;
-            if (sc < 0.6 || sc > 1.7) continue;
+            if (sc < 0.25 || sc > 4.0) continue;
             double sdt = dt * sc;
-            for (int li = -3; li <= 3; li++) {
+            // no time-offset search: the newest point is always "now", and an offset would let a wrong
+            // span be patched read by read instead of being measured
+            for (int li = 0; li <= 0; li++) {
                 long lag = li * lagStep;
                 double[] fit = fitOverlap(p, n, sdt, now + lag);
                 if (fit == null) continue;
@@ -84,11 +94,14 @@ public final class Stitcher {
         }
         lastR2 = bestR2;
         lastRms = bestErr;
-        // accept when the overlap matches within 1.5% of the box height on average
-        if (bestErr == Double.MAX_VALUE || bestErr > 0.015) {
-            startSegment(p, n, dt, now);
+        // accept when the overlap (minus its worst 20%) matches within 3% of the box height
+        if (bestErr == Double.MAX_VALUE || bestErr > 0.03) {
+            // one bad read (a redraw, a tooltip, a mis-read) shouldn't break the history: skip it,
+            // and only start over if several reads in a row don't match
+            if (++misses >= MAX_MISSES) { misses = 0; startSegment(p, n, dt, now); }
             return;
         }
+        misses = 0;
         recordScale(bestScale);
         long lastT = hist.get(hist.size() - 1).t;
         double sdt = dt * bestScale;
@@ -117,35 +130,64 @@ public final class Stitcher {
         prune(now);
     }
 
-    /** Least squares fit hist ≈ a * new + b on overlapping times. */
+    /**
+     * Fit hist ≈ a * new + b on overlapping times. Robust: after a least-squares fit, the worst 20% of
+     * points are dropped and the fit is redone. On a stepped chart a sub-pixel shift of a step
+     * gives a few large errors right at the step, which shouldn't sink an otherwise good match.
+     * Returns {a, b, rms error in box heights, r2, count} or null.
+     */
     private double[] fitOverlap(double[] p, int n, double dt, long now) {
         long t0 = now - Math.round((n - 1) * dt * 1000 * OVERLAP_FRACTION);
-        double sx = 0, sy = 0, sxx = 0, sxy = 0, syy = 0;
+        int cap = 0;
+        for (int k = hist.size() - 1; k >= 0 && hist.get(k).t >= t0; k--) cap++;
+        if (cap < 15) return null;
+        double[] xs = new double[cap], ys = new double[cap];
         int cnt = 0;
         for (int k = hist.size() - 1; k >= 0; k--) {
             Sample s = hist.get(k);
-            if (s.seg != seg) break;
-            if (s.t < t0) break;
+            if (s.seg != seg || s.t < t0) break;
             if (s.t > now) continue;
             double pos = (n - 1) - (now - s.t) / (dt * 1000);
             int i = (int) Math.floor(pos);
             if (i < 0 || i >= n - 1) continue;
             double f = pos - i;
-            double x = p[i] * (1 - f) + p[i + 1] * f;
-            double y = s.v;
-            sx += x; sy += y; sxx += x * x; sxy += x * y; syy += y * y;
+            xs[cnt] = p[i] * (1 - f) + p[i + 1] * f;
+            ys[cnt] = s.v;
             cnt++;
         }
         if (cnt < 15) return null;
-        double mx = sx / cnt, my = sy / cnt;
-        double vx = sxx / cnt - mx * mx, vy = syy / cnt - my * my, cxy = sxy / cnt - mx * my;
+        double[] fit = ls(xs, ys, null, cnt);
+        if (fit == null) return null;
+        double[] res = new double[cnt];
+        for (int i = 0; i < cnt; i++) res[i] = Math.abs(ys[i] - (fit[0] * xs[i] + fit[1]));
+        double[] sorted = java.util.Arrays.copyOf(res, cnt);
+        java.util.Arrays.sort(sorted);
+        double cut = sorted[(int) (cnt * 0.8)];
+        boolean[] keep = new boolean[cnt];
+        for (int i = 0; i < cnt; i++) keep[i] = res[i] <= cut;
+        double[] fit2 = ls(xs, ys, keep, cnt);
+        return fit2 == null ? fit : fit2;
+    }
+
+    /** Least squares y = a x + b over the kept points; {a, b, rms in x units, r2, count}. */
+    private static double[] ls(double[] xs, double[] ys, boolean[] keep, int cnt) {
+        double sx = 0, sy = 0, sxx = 0, sxy = 0, syy = 0;
+        int m = 0;
+        for (int i = 0; i < cnt; i++) {
+            if (keep != null && !keep[i]) continue;
+            double x = xs[i], y = ys[i];
+            sx += x; sy += y; sxx += x * x; sxy += x * y; syy += y * y;
+            m++;
+        }
+        if (m < 12) return null;
+        double mx = sx / m, my = sy / m;
+        double vx = sxx / m - mx * mx, vy = syy / m - my * my, cxy = sxy / m - mx * my;
         if (vx <= 1e-12 || vy <= 1e-12) return null;
         double a = cxy / vx, b = my - a * mx;
-        double res = Math.max(0, vy - a * cxy);    // residual variance, history units
+        double res = Math.max(0, vy - a * cxy);
         double r2 = 1 - res / vy;
-        // residual RMS in the new curve's units = fraction of the box height
         double rms = a > 0 ? Math.sqrt(res) / a : Double.MAX_VALUE;
-        return new double[]{a, b, rms, r2, cnt};
+        return new double[]{a, b, rms, r2, m};
     }
 
     private void recordScale(double s) {

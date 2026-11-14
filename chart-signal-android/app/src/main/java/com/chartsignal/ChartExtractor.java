@@ -73,9 +73,10 @@ public final class ChartExtractor {
             }
             int c2 = Integer.MIN_VALUE;
             if (c2q >= 0 && sat[c2q] >= sat[c1q] * 0.3) c2 = meanColor(argb, w, left, top, right, bottom, unq(c2q), bg);
-            tracked = track(argb, w, left, top, bw, bh, bg, c1, c2, maxPoints);
+            // a coloured line is there: follow it, and if it can't be followed, report no curve
+            // rather than falling back to a method that picks up labels and buttons
+            return track(argb, w, left, top, bw, bh, bg, c1, c2, maxPoints);
         }
-        if (tracked != null) return tracked;
         return median(argb, w, left, top, bw, bh, bg, maxPoints);
     }
 
@@ -100,38 +101,83 @@ public final class ChartExtractor {
         // by treating them as transparent rather than as gaps
         ArrayList<int[]>[] runs = runsPerColumn(m, bw, bh, badRow, badCol);
 
-        int xr = bw - 1;
-        while (xr >= 0 && runs[xr].isEmpty()) xr--;
-        if (xr < 0) return null;
-
-        double[] bestY = null;
+        // Start from the right and take the first (= rightmost) connected stroke that spans at least
+        // 30% of the box. Short strokes on the way (a button, an icon, a marker) are skipped.
+        double[] bestY = null, bestThick = null;
         int bestFirst = -1, bestLast = -1, bestCols = 0;
-        double[] bestThick = null;
-        for (int xs = xr; xs >= Math.max(0, xr - 6); xs--) {
+        java.util.HashSet<int[]> used = new java.util.HashSet<>();
+        search:
+        for (int xs = bw - 1; xs >= (int) (bw * 0.3); xs--) {
             for (int[] start : runs[xs]) {
+                if (used.contains(start)) continue;
                 double[] ys = new double[bw];
                 double[] th = new double[bw];
                 java.util.Arrays.fill(ys, Double.NaN);
-                int cols = follow(runs, xs, start, bw, bh, ys, th);
-                if (cols > bestCols) {
-                    bestCols = cols; bestY = ys; bestThick = th; bestLast = xs;
-                    int f = xs;
-                    for (int x = 0; x < bw; x++) if (!Double.isNaN(ys[x])) { f = x; break; }
-                    bestFirst = f;
+                int cols = follow(runs, xs, start, bw, bh, ys, th, used);
+                int f = xs;
+                for (int x = 0; x < bw; x++) if (!Double.isNaN(ys[x])) { f = x; break; }
+                if (xs - f >= bw * 0.3) {
+                    bestY = ys; bestThick = th; bestLast = xs; bestFirst = f; bestCols = cols;
+                    break search;
                 }
             }
         }
-        if (bestY == null || bestLast - bestFirst < bw * 0.3) return null;
+        if (bestY == null) return null;
 
         // trim a thick block at the old (left) end: e.g. the current-price tag
         double[] t = new double[bestCols];
         int k = 0;
         for (int x = bestFirst; x <= bestLast; x++) if (!Double.isNaN(bestY[x])) t[k++] = bestThick[x];
         java.util.Arrays.sort(t, 0, k);
-        double medThick = t[k / 2];
-        int f = bestFirst;
-        while (f < bestLast && (Double.isNaN(bestY[f]) || bestThick[f] > 4 * medThick + 4)) f++;
+        // typical thickness from the flat parts (vertical strokes of a staircase line are long)
+        double medThick = t[k / 4];
+        // a block (button, price tag) is thick across many columns; a vertical stroke of the line is
+        // thick only across the line's own width
+        double thickLimit = 4 * medThick + 4;
+        int minBlockCols = (int) Math.max(12, 3 * medThick);
+        int f = bestFirst, lead = 0;
+        for (int x = bestFirst; x < bestLast && (Double.isNaN(bestY[x]) || bestThick[x] > thickLimit); x++) lead++;
+        if (lead >= minBlockCols) f = bestFirst + lead;
         bestFirst = f;
+        // ...and at the new (right) end: a button or block the line ran into
+        int e = bestLast;
+        int blockCols = 0;
+        for (int x = bestLast; x > bestFirst && (Double.isNaN(bestY[x]) || bestThick[x] > thickLimit); x--) blockCols++;
+        if (blockCols >= minBlockCols) {
+            e = bestLast - blockCols;
+            while (e > bestFirst && Double.isNaN(bestY[e])) e--;
+        }
+        bestLast = e;
+        if (bestLast - bestFirst < bw * 0.3) return null;
+        if (blockCols >= minBlockCols) {
+            // the block may have hidden the line's last strokes: extend rightwards through runs that
+            // touch the line (a button above the line doesn't touch it)
+            int[] cur = null;
+            double cy = bestY[bestLast], ch = bestThick[bestLast];
+            for (int[] r : runs[bestLast]) if (Math.abs((r[0] + r[1]) / 2.0 - cy) < 1 && r[1] - r[0] + 1 == (int) ch) cur = r;
+            for (int x = bestLast + 1; cur != null && x < bw; x++) {
+                int[] next = null;
+                for (int[] r : runs[x]) {
+                    if (r[1] >= cur[0] - 2 && r[0] <= cur[1] + 2) {
+                        if (next == null || Math.abs((r[0] + r[1]) - (cur[0] + cur[1])) < Math.abs((next[0] + next[1]) - (cur[0] + cur[1]))) next = r;
+                    }
+                }
+                if (next == null) break;
+                cur = next;
+                bestY[x] = (cur[0] + cur[1]) / 2.0;
+                bestThick[x] = cur[1] - cur[0] + 1;
+                bestLast = x;
+            }
+        }
+        // the newest column often holds the vertical stroke of the latest price change; the price
+        // is at the end of that stroke away from the previous level, not in its middle
+        if (bestThick[bestLast] > 2 * medThick + 2) {
+            int pv = bestLast - 1;
+            while (pv > bestFirst && Double.isNaN(bestY[pv])) pv--;
+            double half = bestThick[bestLast] / 2.0, inset = medThick / 2.0;
+            double yUp = bestY[bestLast] - half + inset, yDn = bestY[bestLast] + half - inset;
+            bestY[bestLast] = Math.abs(yUp - bestY[pv]) > Math.abs(yDn - bestY[pv]) ? yUp : yDn;
+        }
 
         // interpolate gaps
         double[] col = new double[bw];
@@ -153,10 +199,14 @@ public final class ChartExtractor {
     }
 
     /** Follow the line leftwards from column xs. Fills ys (run centre, px) and thickness. */
-    private static int follow(ArrayList<int[]>[] runs, int xs, int[] start, int bw, int bh, double[] ys, double[] th) {
-        int maxJump = Math.max(4, (int) (bh * 0.10));
+    private static int follow(ArrayList<int[]>[] runs, int xs, int[] start, int bw, int bh, double[] ys, double[] th,
+                              java.util.Set<int[]> used) {
+        // the line is drawn as one continuous stroke, so neighbouring columns' runs touch; allow only
+        // small breaks (anti-aliasing, compression, a crossing marker), growing with skipped columns
+        int maxJump = Math.max(4, (int) (bh * 0.03));
         int maxGap = Math.max(4, bw / 50);
         int[] cur = start;
+        used.add(start);
         ys[xs] = (cur[0] + cur[1]) / 2.0;
         th[xs] = cur[1] - cur[0] + 1;
         int cols = 1, lastX = xs;
@@ -172,9 +222,10 @@ public final class ChartExtractor {
                 double ctr = Math.abs((r[0] + r[1]) / 2.0 - cc);
                 if (d < bestD || (d == bestD && ctr < bestC)) { bestD = d; bestC = ctr; pick = r; }
             }
-            int allowed = maxJump * Math.max(1, lastX - x);
-            if (pick != null && bestD <= Math.min(allowed, bh / 3)) {
+            int allowed = maxJump + 2 * (lastX - x - 1);
+            if (pick != null && bestD <= Math.min(allowed, bh / 8)) {
                 cur = pick;
+                used.add(pick);
                 ys[x] = (cur[0] + cur[1]) / 2.0;
                 th[x] = cur[1] - cur[0] + 1;
                 cols++;
@@ -186,27 +237,56 @@ public final class ChartExtractor {
         return cols;
     }
 
+    /**
+     * Vertical runs of line pixels in each column. Rows that are mostly line-coloured (the thin
+     * current-price line) are ignored on their own, but the latest price usually sits exactly on that
+     * row, so a run that includes those rows is kept when it is at least as thick as the line itself.
+     */
     @SuppressWarnings("unchecked")
     private static ArrayList<int[]>[] runsPerColumn(boolean[] m, int bw, int bh, boolean[] badRow, boolean[] badCol) {
+        // typical line thickness, from runs that don't touch removed rows
+        ArrayList<Integer> lens = new ArrayList<>();
+        for (int x = 0; x < bw; x += 3) {
+            if (badCol[x]) continue;
+            int s = -1;
+            boolean touchesBad = false;
+            for (int y = 0; y <= bh; y++) {
+                boolean on = y < bh && m[y * bw + x];
+                if (on) { if (s < 0) { s = y; touchesBad = false; } if (badRow[y]) touchesBad = true; }
+                else if (s >= 0) { if (!touchesBad) lens.add(y - s); s = -1; }
+            }
+        }
+        java.util.Collections.sort(lens);
+        int thick = lens.isEmpty() ? 3 : lens.get(lens.size() / 2);
+        int minOnBad = Math.max(3, (int) Math.round(thick * 0.6));
+
         ArrayList<int[]>[] runs = new ArrayList[bw];
         for (int x = 0; x < bw; x++) {
             runs[x] = new ArrayList<>();
             if (badCol[x]) continue;
             int s = -1, lastOn = -10;
-            for (int y = 0; y < bh; y++) {
-                boolean on = m[y * bw + x] && !badRow[y];
-                if (badRow[y] && s >= 0 && y - lastOn <= 3) continue;    // bridge across a removed row
+            boolean hasGood = false;
+            for (int y = 0; y <= bh; y++) {
+                boolean on = y < bh && m[y * bw + x];
                 if (on) {
-                    if (s < 0 || y - lastOn > 3) {
-                        if (s >= 0) runs[x].add(new int[]{s, lastOn});
-                        s = y;
+                    if (s >= 0 && y - lastOn > 3) {
+                        addRun(runs[x], s, lastOn, hasGood, minOnBad);
+                        s = -1;
                     }
+                    if (s < 0) { s = y; hasGood = false; }
+                    if (!badRow[y]) hasGood = true;
                     lastOn = y;
                 }
             }
-            if (s >= 0) runs[x].add(new int[]{s, lastOn});
+            if (s >= 0) addRun(runs[x], s, lastOn, hasGood, minOnBad);
         }
         return runs;
+    }
+
+    private static void addRun(ArrayList<int[]> list, int s, int e, boolean hasGood, int minOnBad) {
+        // a run made only of current-price-line rows is kept only if it is as thick as the line
+        if (!hasGood && e - s + 1 < minOnBad) return;
+        list.add(new int[]{s, e});
     }
 
     // ---------------------------------------------------------------- median fallback

@@ -222,13 +222,17 @@ public class WatchService extends Service {
                 main.post(() -> setWait("no chart line found in the box", "Long-press the dot to redraw the chart box."));
                 return;
             }
-            double dt = spanSec * c.coverage / c.n;       // seconds per sample
+            double dtSetting = spanSec * c.coverage / c.n;   // seconds per sample, from the setting
 
             // live scoring: extend the continuous history, settle any expired trade
-            stitcher.update(c.p, c.n, dt, now);
+            stitcher.update(c.p, c.n, dtSetting, now);
             scorer.settle(stitcher);
             if (scorer.settled != null) logTrade("settle", scorer.settled);
 
+            // once stitching has measured how fast the chart really scrolls, use that instead of the
+            // setting, so a wrong "seconds across the box" doesn't skew the forecast horizon
+            double sh = stitcher.scaleHint();
+            final double dt = Double.isNaN(sh) ? dtSetting : dtSetting * sh;
             int h = (int) Math.max(1, Math.round(expirySec / dt));
             Predictor.Result r = Predictor.analyze(c.p, c.n, h, minHit);
             Scorer.Trade opened = scorer.offer(r.signal, stitcher, now, Math.round(expirySec * 1000));
@@ -261,9 +265,10 @@ public class WatchService extends Service {
     /** If stitching shows the chart scrolls faster or slower than the setting implies, say so. */
     private String calibrationHint() {
         double s = stitcher.scaleHint();
-        if (Double.isNaN(s) || Math.abs(s - 1) < 0.07) return "";
-        return "\nThe chart scrolls as if the box spans ~" + Math.round(spanSec * s)
-            + "s, not " + (int) spanSec + "s. Consider updating the setting.";
+        if (Double.isNaN(s)) return "\nMeasuring how fast the chart scrolls…";
+        String m = "\nMeasured box span ~" + Math.round(spanSec * s) + "s (setting " + (int) spanSec + "s)";
+        if (Math.abs(s - 1) >= 0.07) m += ": using the measured value. Update the setting to match.";
+        return m;
     }
 
     private void log(JSONObject o) {

@@ -54,21 +54,24 @@ phone or a real trading app.
 
 - **Stitcher** (`Stitcher`): joins consecutive reads into one continuous price history. The app
   rescales its price axis as the chart scrolls, so each new curve is mapped onto the history with a
-  least-squares fit (y = a·new + b) on the newest part of the overlap, after trying small corrections
-  to the time scale. A read that can't be matched within 1.5% of the box height starts a new segment.
-  The best time-scale correction doubles as a check on the "seconds across the chart box" setting.
+  robust least-squares fit (y = a·new + b, worst 20% of points dropped) on the newest part of the
+  overlap, trying time-scale corrections from 0.4x to 2.5x. The best correction measures how fast the
+  chart really scrolls, and the forecast horizon uses that measured span instead of the setting.
+  A single read that doesn't match is skipped; a new segment starts only after 4 misses in a row.
 - **Scorer** (`Scorer`): takes one CALL/PUT at a time (like one trade per expiry) and scores it
   against the stitched history when the expiry passes. The overlay shows the session tally.
 - **Recorder** (`Recorder`): one JSON line per read (curve, settings, every model's output, signal)
   plus trade open/settle lines, in the app's private storage. Optional chart-box image every 30 s.
   **Export recordings** writes everything into one .zip where you choose.
 
-Simulated test (20 minutes of price, chart window rescaled every read, reads every ~1 s with jitter
-and 5% dropped frames, span setting correct or 10-15% off; 30, 60 and 120 s spans):
+Simulated tests:
 
-- 97-99.9% of 5 s and 15 s moves have the right direction in the stitched history
-- 97-100% of scored trades match the true outcome
-- the span check lands within ~3% of the true span
+- Price-only stitching (20 min, chart rescaled every read, span setting right or 15-60% off):
+  98-100% of scored trades match the true outcome; the measured span lands within ~3%.
+- End to end on rendered frames that look like the app (blue stepped line, buttons, labels, price
+  tag, the user's box, real span 70 s with the setting at 30 s, reads every ~0.45 s, 5 min):
+  line found on 647/647 reads, 615 joined, measured span 70 s, 51 trades scored (7 unscored),
+  47/51 scored correctly.
 
 ## Build
 
