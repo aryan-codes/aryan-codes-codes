@@ -47,6 +47,26 @@ Everything runs on the phone. The app has no internet permission.
 The extractor recovered a rendered candlestick chart at correlation 0.96. Not yet tested on a real
 phone or a real trading app.
 
+## Live scoring and recording
+
+- **Stitcher** (`Stitcher`): joins consecutive reads into one continuous price history. The app
+  rescales its price axis as the chart scrolls, so each new curve is mapped onto the history with a
+  least-squares fit (y = a·new + b) on the newest part of the overlap, after trying small corrections
+  to the time scale. A read that can't be matched within 1.5% of the box height starts a new segment.
+  The best time-scale correction doubles as a check on the "seconds across the chart box" setting.
+- **Scorer** (`Scorer`): takes one CALL/PUT at a time (like one trade per expiry) and scores it
+  against the stitched history when the expiry passes. The overlay shows the session tally.
+- **Recorder** (`Recorder`): one JSON line per read (curve, settings, every model's output, signal)
+  plus trade open/settle lines, in the app's private storage. Optional chart-box image every 30 s.
+  **Export recordings** writes everything into one .zip where you choose.
+
+Simulated test (20 minutes of price, chart window rescaled every read, reads every ~1 s with jitter
+and 5% dropped frames, span setting correct or 10-15% off; 30, 60 and 120 s spans):
+
+- 97-99.9% of 5 s and 15 s moves have the right direction in the stitched history
+- 97-100% of scored trades match the true outcome
+- the span check lands within ~3% of the true span
+
 ## Build
 
 GitHub Actions builds `app-debug.apk` on every push that touches this folder

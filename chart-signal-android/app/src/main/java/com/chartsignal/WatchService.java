@@ -41,6 +41,9 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.nio.ByteBuffer;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -81,6 +84,13 @@ public class WatchService extends Service {
     private double spanSec, expirySec, minHit;
     private long intervalMs;
     private float boxL, boxT, boxR, boxB; // fractions of screen; boxR <= boxL means not set
+    private boolean recordOn, imagesOn;
+
+    // live scoring + recording (used only on the worker thread)
+    private final Stitcher stitcher = new Stitcher(30 * 60 * 1000L);
+    private final Scorer scorer = new Scorer();
+    private Recorder recorder;
+    private volatile String scoreLine = "";
 
     // overlay
     private WindowManager wm;
@@ -123,6 +133,15 @@ public class WatchService extends Service {
         display = projection.createVirtualDisplay("ChartSignal", capW, capH, dm.densityDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, captureHandler);
 
+        if (recordOn) {
+            recorder = new Recorder(this, imagesOn);
+            try {
+                recorder.write(new JSONObject().put("type", "session").put("version", 2)
+                    .put("t", System.currentTimeMillis()).put("capW", capW).put("capH", capH)
+                    .put("span", spanSec).put("exp", expirySec).put("minHit", minHit)
+                    .put("intervalMs", intervalMs));
+            } catch (Exception ignored) { }
+        }
         showOverlay();
         running = true;
         captureHandler.postDelayed(tick, 500);
@@ -144,6 +163,8 @@ public class WatchService extends Service {
         intervalMs = p.getInt("intervalMs", 1000);
         boxL = p.getFloat("boxL", 0); boxT = p.getFloat("boxT", 0);
         boxR = p.getFloat("boxR", 0); boxB = p.getFloat("boxB", 0);
+        recordOn = p.getBoolean("record", true);
+        imagesOn = p.getBoolean("images", false);
     }
 
     // ---------------- capture + analysis ----------------
@@ -160,7 +181,8 @@ public class WatchService extends Service {
                     copyPixels(img);
                     busy = true;
                     final int[] px = pixels;
-                    worker.execute(() -> analyze(px));
+                    final long wall = System.currentTimeMillis();
+                    worker.execute(() -> analyze(px, wall));
                 }
             } catch (Exception e) {
                 String m = String.valueOf(e.getMessage());
@@ -189,18 +211,31 @@ public class WatchService extends Service {
         pixels = px;
     }
 
-    private void analyze(int[] px) {
+    private void analyze(int[] px, long now) {
         try {
-            ChartExtractor.Curve c = ChartExtractor.extract(px, capW, capH,
-                Math.round(boxL * capW), Math.round(boxT * capH),
-                Math.round(boxR * capW), Math.round(boxB * capH), MAX_POINTS);
+            int l = Math.round(boxL * capW), t = Math.round(boxT * capH);
+            int r0 = Math.round(boxR * capW), b = Math.round(boxB * capH);
+            ChartExtractor.Curve c = ChartExtractor.extract(px, capW, capH, l, t, r0, b, MAX_POINTS);
+            if (recorder != null) recorder.maybeImage(px, capW, capH, l, t, r0, b, now);
             if (c == null) {
+                log(new JSONObject().put("type", "read").put("t", now).put("noCurve", true));
                 main.post(() -> setWait("no chart line found in the box", "Long-press the dot to redraw the chart box."));
                 return;
             }
             double dt = spanSec * c.coverage / c.n;       // seconds per sample
+
+            // live scoring: extend the continuous history, settle any expired trade
+            stitcher.update(c.p, c.n, dt, now);
+            scorer.settle(stitcher);
+            if (scorer.settled != null) logTrade("settle", scorer.settled);
+
             int h = (int) Math.max(1, Math.round(expirySec / dt));
             Predictor.Result r = Predictor.analyze(c.p, c.n, h, minHit);
+            Scorer.Trade opened = scorer.offer(r.signal, stitcher, now, Math.round(expirySec * 1000));
+            if (opened != null) logTrade("open", opened);
+            scoreLine = scorer.summary() + (scorer.hasOpen() ? " · 1 open" : "");
+            logRead(now, c, dt, r);
+
             if (r.hMax > 0 && h > r.hMax) {
                 int seen = (int) Math.round(c.n * dt);
                 int maxExp = (int) Math.floor(r.hMax * dt);
@@ -209,7 +244,8 @@ public class WatchService extends Service {
                     + "% of its width has candles). Expiry " + (int) expirySec + "s needs ~"
                     + (int) Math.ceil(expirySec * c.n / (double) r.hMax) + "s of visible price.\n"
                     + "Fix: zoom the chart out so more candles show, or shorten the expiry. "
-                    + "Also check 'Seconds shown across the chart box' matches the time axis.";
+                    + "Also check 'Seconds shown across the chart box' matches the time axis."
+                    + calibrationHint();
                 main.post(() -> setWait(msg, more));
                 return;
             }
@@ -220,6 +256,52 @@ public class WatchService extends Service {
         } finally {
             busy = false;
         }
+    }
+
+    /** If stitching shows the chart scrolls faster or slower than the setting implies, say so. */
+    private String calibrationHint() {
+        double s = stitcher.scaleHint();
+        if (Double.isNaN(s) || Math.abs(s - 1) < 0.07) return "";
+        return "\nThe chart scrolls as if the box spans ~" + Math.round(spanSec * s)
+            + "s, not " + (int) spanSec + "s. Consider updating the setting.";
+    }
+
+    private void log(JSONObject o) {
+        if (recorder != null) recorder.write(o);
+    }
+
+    private void logRead(long now, ChartExtractor.Curve c, double dt, Predictor.Result r) {
+        if (recorder == null) return;
+        try {
+            JSONObject o = new JSONObject()
+                .put("type", "read").put("t", now)
+                .put("box", new JSONArray().put(boxL).put(boxT).put(boxR).put(boxB))
+                .put("cov", c.coverage).put("first", c.firstCol).put("last", c.lastCol)
+                .put("n", c.n).put("dt", dt).put("h", r.h)
+                .put("p", Recorder.arr(c.p, c.n, 4))
+                .put("seg", stitcher.segment()).put("joined", stitcher.lastJoined)
+                .put("sig", r.signal).put("why", r.why)
+                .put("d", new JSONArray().put(r.sindyDelta).put(r.nnDelta).put(r.momDelta))
+                .put("acc", new JSONArray().put(r.sindyAcc).put(r.nnAcc).put(r.momAcc))
+                .put("w", new JSONArray().put(r.sindyW).put(r.nnW).put(r.momW))
+                .put("ens", r.ensAcc).put("ensCalls", r.ensCalls).put("fresh", r.freshEr)
+                .put("sindy", r.sindyInfo);
+            if (!Double.isNaN(r.vote)) o.put("vote", r.vote);
+            if (!Double.isNaN(stitcher.lastRms)) o.put("rms", stitcher.lastRms);
+            double sh = stitcher.scaleHint();
+            if (!Double.isNaN(sh)) o.put("scaleHint", sh);
+            recorder.write(o);
+        } catch (Exception ignored) { }
+    }
+
+    private void logTrade(String type, Scorer.Trade tr) {
+        if (recorder == null) return;
+        try {
+            JSONObject o = new JSONObject().put("type", type)
+                .put("openT", tr.openT).put("expiryT", tr.expiryT).put("dir", tr.dir).put("seg", tr.seg);
+            if (tr.outcome != null) o.put("outcome", tr.outcome);
+            recorder.write(o);
+        } catch (Exception ignored) { }
     }
 
     // ---------------- overlay: signal dot ----------------
@@ -318,7 +400,8 @@ public class WatchService extends Service {
 
     private void refreshDetail() {
         if (label == null) return;
-        label.setText(expanded && !detail.isEmpty() ? headline + "\n" + detail : headline);
+        String head = scoreLine.isEmpty() ? headline : headline + "\n" + scoreLine;
+        label.setText(expanded && !detail.isEmpty() ? head + "\n" + detail : head);
         spark.setVisibility(expanded ? View.VISIBLE : View.GONE);
     }
 
@@ -330,6 +413,7 @@ public class WatchService extends Service {
             + "\n" + line("Momentum", r.momDelta, r.momAcc, r.momW)
             + "\n" + r.why
             + String.format("\nensemble backtest %d%% over %d calls", Math.round(r.ensAcc * 100), r.ensCalls)
+            + calibrationHint()
             + "\n" + r.sindyInfo
             + String.format("\n%d pts, %.1f s each, horizon %d", c.n, dt, r.h);
         if ("CALL".equals(r.signal)) { paintDot(0xFF1DB954, "CALL", Color.WHITE); headline = "CALL · " + (int) expirySec + "s"; }
@@ -519,7 +603,9 @@ public class WatchService extends Service {
         if (reader != null) reader.close();
         if (projection != null) projection.stop();
         if (captureThread != null) captureThread.quitSafely();
-        worker.shutdownNow();
+        worker.shutdown();
+        try { worker.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) { }
+        if (recorder != null) recorder.close();
         closeSelector();
         if (overlay != null && wm != null) {
             try { wm.removeView(overlay); } catch (Exception ignored) { }

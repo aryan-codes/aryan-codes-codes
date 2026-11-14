@@ -14,6 +14,7 @@ import android.text.InputType;
 import android.util.TypedValue;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -24,8 +25,11 @@ public class MainActivity extends Activity {
 
     public static final String PREFS = "chartsignal";
     private static final int REQ_CAPTURE = 7;
+    private static final int REQ_EXPORT = 8;
 
     private EditText spanField, expiryField, minHitField, intervalField;
+    private CheckBox recordBox, imagesBox;
+    private TextView recStatus;
 
     private int dp(float v) {
         return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics()));
@@ -81,6 +85,29 @@ public class MainActivity extends Activity {
         intervalField = number(p.getInt("intervalMs", 1000));
         col.addView(intervalField);
 
+        col.addView(text("Recording", 14, true));
+        recordBox = new CheckBox(this);
+        recordBox.setText("Record each read (price curve, model outputs, signals) on this phone");
+        recordBox.setChecked(p.getBoolean("record", true));
+        col.addView(recordBox);
+        imagesBox = new CheckBox(this);
+        imagesBox.setText("Also save a small image of the chart box every 30 s");
+        imagesBox.setChecked(p.getBoolean("images", false));
+        col.addView(imagesBox);
+        recStatus = text("", 12, false);
+        col.addView(recStatus);
+        LinearLayout recRow = new LinearLayout(this);
+        Button export = new Button(this);
+        export.setText("Export recordings");
+        export.setOnClickListener(v -> startExport());
+        Button delete = new Button(this);
+        delete.setText("Delete recordings");
+        delete.setOnClickListener(v -> confirmDelete(delete));
+        recRow.addView(export, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        recRow.addView(delete, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        col.addView(recRow);
+        refreshRecStatus();
+
         Button start = new Button(this);
         start.setText("Start watching");
         start.setOnClickListener(v -> onStartClicked());
@@ -125,6 +152,8 @@ public class MainActivity extends Activity {
             .putInt("expirySec", parse(expiryField, 30, 1, 3600))
             .putInt("minHit", parse(minHitField, 65, 50, 100))
             .putInt("intervalMs", parse(intervalField, 1000, 300, 60000))
+            .putBoolean("record", recordBox.isChecked())
+            .putBoolean("images", imagesBox.isChecked())
             .apply();
 
         if (!Settings.canDrawOverlays(this)) {
@@ -141,8 +170,70 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (recStatus != null) refreshRecStatus();
+    }
+
+    private void refreshRecStatus() {
+        long bytes = Recorder.totalBytes(this);
+        int sessions = Recorder.sessionCount(this);
+        recStatus.setText(sessions == 0 ? "No recordings yet."
+            : sessions + " session(s), " + String.format(java.util.Locale.US, "%.1f MB", bytes / 1048576.0)
+              + ". Export saves one .zip wherever you choose (Downloads, Drive, ...).");
+    }
+
+    private void startExport() {
+        if (Recorder.sessionCount(this) == 0) {
+            Toast.makeText(this, "Nothing recorded yet.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String name = "chartsignal-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US)
+            .format(new java.util.Date()) + ".zip";
+        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("application/zip")
+            .putExtra(Intent.EXTRA_TITLE, name);
+        startActivityForResult(i, REQ_EXPORT);
+    }
+
+    private long deleteArmedAt = 0;
+
+    private void confirmDelete(Button b) {
+        long now = System.currentTimeMillis();
+        if (now - deleteArmedAt > 4000) {
+            deleteArmedAt = now;
+            b.setText("Tap again to delete");
+            b.postDelayed(() -> b.setText("Delete recordings"), 4000);
+            return;
+        }
+        deleteArmedAt = 0;
+        Recorder.deleteAll(this);
+        b.setText("Delete recordings");
+        refreshRecStatus();
+        Toast.makeText(this, "Recordings deleted.", Toast.LENGTH_SHORT).show();
+    }
+
+    @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_EXPORT) {
+            if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+            final Uri uri = data.getData();
+            Toast.makeText(this, "Exporting…", Toast.LENGTH_SHORT).show();
+            new Thread(() -> {
+                String msg;
+                try (java.io.OutputStream os = getContentResolver().openOutputStream(uri)) {
+                    Recorder.exportZip(this, os);
+                    msg = "Exported.";
+                } catch (Exception e) {
+                    msg = "Export failed: " + e.getMessage();
+                }
+                final String m = msg;
+                runOnUiThread(() -> Toast.makeText(this, m, Toast.LENGTH_LONG).show());
+            }).start();
+            return;
+        }
         if (requestCode != REQ_CAPTURE) return;
         if (resultCode != RESULT_OK || data == null) {
             Toast.makeText(this, "Screen capture was not allowed.", Toast.LENGTH_LONG).show();
