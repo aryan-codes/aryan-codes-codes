@@ -10,8 +10,25 @@ android {
         applicationId "com.chartsignal"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 10
+        versionName "1.10"
+    }
+
+    // One fixed key for every build, so a new APK installs over the previous one.
+    // This is a throwaway key for a personal test app, not a release key.
+    signingConfigs {
+        test {
+            storeFile file("../signing/chartsignal-test.keystore")
+            storePassword "chartsignal-test"
+            keyAlias "chartsignal"
+            keyPassword "chartsignal-test"
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.test
+        }
     }
 
     compileOptions {
