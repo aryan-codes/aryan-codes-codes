@@ -13,29 +13,19 @@ import android.provider.Settings;
 import android.text.InputType;
 import android.util.TypedValue;
 import android.view.ViewGroup;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
-
-import java.util.Arrays;
 
 public class MainActivity extends Activity {
 
     public static final String PREFS = "chartsignal";
-    public static final String[] MODELS = {"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"};
-    private static final String[] MODEL_LABELS = {
-        "Opus 5.5 (most careful, slowest)", "Sonnet 5.5 (faster)", "Haiku 5.5 (fastest, cheapest)"};
-    private static final String[] EXPIRIES = {
-        "5 seconds", "15 seconds", "30 seconds", "1 minute", "2 minutes", "5 minutes"};
     private static final int REQ_CAPTURE = 7;
 
-    private EditText keyField, intervalField;
-    private Spinner modelSpin, expirySpin;
+    private EditText spanField, expiryField, minHitField, intervalField;
 
     private int dp(float v) {
         return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics()));
@@ -50,6 +40,13 @@ public class MainActivity extends Activity {
         return t;
     }
 
+    private EditText number(int value) {
+        EditText e = new EditText(this);
+        e.setInputType(InputType.TYPE_CLASS_NUMBER);
+        e.setText(String.valueOf(value));
+        return e;
+    }
+
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -60,34 +57,27 @@ public class MainActivity extends Activity {
         col.setPadding(dp(20), dp(24), dp(20), dp(24));
 
         col.addView(text("Chart Signal", 24, true));
-        col.addView(text("Watches your screen and shows a floating dot: green = CALL, red = PUT, "
-            + "white = no trade. Each read is Claude's guess from one frame, not a guarantee.", 14, false));
+        col.addView(text("Reads the chart on your screen and predicts the next move with SINDy-PI and a "
+            + "small neural net trained on the phone. No internet, no account. Green = CALL, red = PUT, "
+            + "white = WAIT.", 14, false));
 
-        col.addView(text("Anthropic API key", 14, true));
-        keyField = new EditText(this);
-        keyField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        keyField.setHint("sk-ant-…");
-        keyField.setText(p.getString("apiKey", ""));
-        col.addView(keyField);
-        TextView keyHelp = text("Create one at console.anthropic.com. Usage is billed to that account.", 12, false);
-        col.addView(keyHelp);
+        col.addView(text("Seconds shown across the chart box", 14, true));
+        spanField = number(p.getInt("spanSec", 120));
+        col.addView(spanField);
+        col.addView(text("Read it from the time axis: e.g. if the box spans 12:00:00 to 12:02:00, enter 120.", 12, false));
 
-        col.addView(text("Model", 14, true));
-        modelSpin = new Spinner(this);
-        modelSpin.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, MODEL_LABELS));
-        modelSpin.setSelection(Math.max(0, Arrays.asList(MODELS).indexOf(p.getString("model", MODELS[0]))));
-        col.addView(modelSpin);
+        col.addView(text("Trade expiry (seconds)", 14, true));
+        expiryField = number(p.getInt("expirySec", 30));
+        col.addView(expiryField);
 
-        col.addView(text("Trade expiry", 14, true));
-        expirySpin = new Spinner(this);
-        expirySpin.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, EXPIRIES));
-        expirySpin.setSelection(Math.max(0, Arrays.asList(EXPIRIES).indexOf(p.getString("expiry", "1 minute"))));
-        col.addView(expirySpin);
+        col.addView(text("Minimum backtest hit rate to signal (%)", 14, true));
+        minHitField = number(p.getInt("minHit", 65));
+        col.addView(minHitField);
+        col.addView(text("Each read, both models are replayed on the visible chart. A CALL or PUT is shown only "
+            + "if both agree and their agreeing calls were right at least this often.", 12, false));
 
-        col.addView(text("Seconds between reads (minimum 2)", 14, true));
-        intervalField = new EditText(this);
-        intervalField.setInputType(InputType.TYPE_CLASS_NUMBER);
-        intervalField.setText(String.valueOf(p.getInt("interval", 5)));
+        col.addView(text("Milliseconds between reads", 14, true));
+        intervalField = number(p.getInt("intervalMs", 1000));
         col.addView(intervalField);
 
         Button start = new Button(this);
@@ -104,10 +94,14 @@ public class MainActivity extends Activity {
         col.addView(stop, new LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        col.addView(text("How to use: tap Start, allow \"display over other apps\" if asked, then allow "
-            + "screen capture (choose your trading app or the entire screen). Open your trading app. "
-            + "Drag the dot anywhere; tap it to show the reason. A dimmed dot means the reading is old.\n\n"
-            + "Each read takes a few seconds, so the dot always lags the live price slightly.", 13, false));
+        col.addView(text("How to use\n"
+            + "1. Tap Start, allow \"display over other apps\", then allow screen capture.\n"
+            + "2. Open your trading app. The first time, a yellow box appears: drag it over the candles "
+            + "or price line only (not the price axis or buttons) and tap Save box.\n"
+            + "3. Hide indicators (moving averages, Bollinger bands) so only the price is drawn.\n"
+            + "4. Keep the dot outside the box. Tap the dot for details and a mini chart of what the app "
+            + "read plus the forecast. Long-press it to redraw the box.\n"
+            + "If you change the chart's zoom or timeframe, update the seconds setting.", 13, false));
 
         ScrollView sv = new ScrollView(this);
         sv.addView(col);
@@ -119,22 +113,17 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void onStartClicked() {
-        String key = keyField.getText().toString().trim();
-        if (key.isEmpty()) {
-            Toast.makeText(this, "Enter your Anthropic API key first.", Toast.LENGTH_LONG).show();
-            return;
-        }
-        int interval;
-        try { interval = Integer.parseInt(intervalField.getText().toString().trim()); }
-        catch (Exception e) { interval = 5; }
-        interval = Math.max(2, Math.min(300, interval));
+    private static int parse(EditText e, int def, int lo, int hi) {
+        try { return Math.max(lo, Math.min(hi, Integer.parseInt(e.getText().toString().trim()))); }
+        catch (Exception ex) { return def; }
+    }
 
+    private void onStartClicked() {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-            .putString("apiKey", key)
-            .putString("model", MODELS[modelSpin.getSelectedItemPosition()])
-            .putString("expiry", EXPIRIES[expirySpin.getSelectedItemPosition()])
-            .putInt("interval", interval)
+            .putInt("spanSec", parse(spanField, 120, 10, 86400))
+            .putInt("expirySec", parse(expiryField, 30, 1, 3600))
+            .putInt("minHit", parse(minHitField, 65, 50, 100))
+            .putInt("intervalMs", parse(intervalField, 1000, 300, 60000))
             .apply();
 
         if (!Settings.canDrawOverlays(this)) {
@@ -144,7 +133,8 @@ public class MainActivity extends Activity {
                 Uri.parse("package:" + getPackageName())));
             return;
         }
-
+        // restart cleanly if already running, so new settings apply
+        stopService(new Intent(this, WatchService.class));
         MediaProjectionManager mpm = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         startActivityForResult(mpm.createScreenCaptureIntent(), REQ_CAPTURE);
     }
