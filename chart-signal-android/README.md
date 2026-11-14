@@ -11,8 +11,11 @@ Everything runs on the phone. The app has no internet permission.
 ## How it works
 
 1. **Reading the chart** (`ChartExtractor`): you draw a box over the chart once. Each read, the
-   background color is found, grid and price lines are removed, and the middle of the remaining
-   ink in each pixel column becomes the price at that moment. No OCR; only relative movement is used.
+   line's colour is found automatically (the most common strongly coloured ink; both colours for
+   red/green candles), so grey/white labels, buttons, price tags in other colours and time markers
+   are ignored. The line is then followed as one connected stroke from the latest point leftwards,
+   so anything not connected to it is skipped. If no coloured line can be followed, it falls back
+   to the median height of all ink per column. No OCR; only relative movement is used.
 2. **SINDy-PI** (`SindyPi`): state is the z-scored price `x` and its velocity `v`. A library of
    polynomial terms in (x, v) plus implicit terms `a, a·x, a·v` (a = acceleration) is fit with
    sequentially thresholded ridge regression, once per implicit left-hand side. The candidate with

@@ -276,7 +276,7 @@ public class WatchService extends Service {
             JSONObject o = new JSONObject()
                 .put("type", "read").put("t", now)
                 .put("box", new JSONArray().put(boxL).put(boxT).put(boxR).put(boxB))
-                .put("cov", c.coverage).put("first", c.firstCol).put("last", c.lastCol)
+                .put("cov", c.coverage).put("first", c.firstCol).put("last", c.lastCol).put("tracked", c.tracked)
                 .put("n", c.n).put("dt", dt).put("h", r.h)
                 .put("p", Recorder.arr(c.p, c.n, 4))
                 .put("seg", stitcher.segment()).put("joined", stitcher.lastJoined)
