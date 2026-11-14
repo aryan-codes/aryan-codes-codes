@@ -236,7 +236,7 @@ public class WatchService extends Service {
         try {
             int l = Math.round(boxL * capW), t = Math.round(boxT * capH);
             int r0 = Math.round(boxR * capW), b = Math.round(boxB * capH);
-            if (trader != null && trader.pending != null) autoStep(now, "NO_TRADE", px);
+            if (trader != null && (trader.pending != null || !trader.armed)) autoStep(now, "NO_TRADE", px);
             ChartExtractor.Curve c = ChartExtractor.extract(px, capW, capH, l, t, r0, b, MAX_POINTS);
             if (recorder != null) recorder.maybeImage(px, capW, capH, l, t, r0, b, now);
             if (c == null) {
@@ -302,6 +302,7 @@ public class WatchService extends Service {
         return new AutoTrader.Screen() {
             @Override public String readText(AutoTrader.Region r) { return textReader.read(px, capW, capH, r); }
             @Override public double highlighted(AutoTrader.Region r) { return TextReader.highlighted(px, capW, capH, r); }
+            @Override public int[] fingerprint(AutoTrader.Region r) { return TextReader.fingerprint(px, capW, capH, r); }
         };
     }
 
@@ -666,6 +667,11 @@ public class WatchService extends Service {
                     }
                     ed.apply();
                     loadMarks(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE));
+                    if (trader != null) {
+                        trader.resetArming();
+                        // re-marking can clear a DEMO-confirmation stop, never a trade-limit or stop-loss stop
+                        if (trader.stopped && trader.stopReason.contains("DEMO")) { trader.stopped = false; trader.stopReason = ""; }
+                    }
                     postDelayed(() -> { closeSelector(); headline = "buttons marked"; refreshDetail(); }, 400);
                 }
                 return true;

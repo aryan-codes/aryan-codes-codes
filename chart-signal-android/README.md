@@ -78,16 +78,19 @@ Simulated tests:
 `AutoTrader` + `TapService` (an accessibility service that only taps) + `TextReader` (ML Kit on-device
 text recognition). Off by default.
 
-- Before every trade it reads the DEMO and REAL badges: DEMO must read "DEMO" and be highlighted,
-  REAL must read "REAL" and be clearly less highlighted. Otherwise it stops for the session. It never
-  trades on a REAL account.
+- Arming, once per session: text recognition must read "DEMO" on the highlighted badge (one wrong
+  letter tolerated, up to 30 frames tried). A colour fingerprint of both badges is then saved.
+- Before every trade: DEMO must still be the highlighted badge and both badges must still match their
+  fingerprints. If the account is switched to REAL the highlight moves and it stops for the session.
+  It never trades on a REAL account and never trades before arming succeeds.
 - One trade at a time, on every CALL/PUT signal, by tapping the BUY/SELL positions you marked.
 - Each trade is graded by the broker's own balance: read just before the tap and again after expiry
   (+stake*payout = won, -stake = lost, unchanged = refund, anything else = unclear and not counted).
 - Stops after a trade limit or a balance drop you set. Every trade is logged in the recording.
 
-The safety and grading rules are covered by an off-device test (20 checks: REAL selected, badges
-swapped, both highlighted, unreadable badges, tap service off, stop-loss, trade cap, balance parsing).
+The safety and grading rules are covered by off-device tests (29 checks: REAL selected, badges
+swapped, both highlighted, unreadable badges, OCR misreads before arming, switching to REAL mid-session,
+badge appearance changing, tap service off, stop-loss, trade cap, balance parsing).
 
 ## Build
 

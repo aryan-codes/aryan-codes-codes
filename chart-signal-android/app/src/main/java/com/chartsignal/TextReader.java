@@ -52,5 +52,27 @@ public final class TextReader {
         return n == 0 ? 0 : (double) hit / n;
     }
 
+    /** Colour fingerprint: the region split into 12 x 4 cells, mean R, G, B of each (144 values). */
+    public static int[] fingerprint(int[] px, int w, int h, AutoTrader.Region r) {
+        int bw = Math.max(12, Math.round(r.w * w)), bh = Math.max(4, Math.round(r.h * h));
+        int l = Math.max(0, Math.min(w - bw, Math.round(r.cx * w - bw / 2f)));
+        int t = Math.max(0, Math.min(h - bh, Math.round(r.cy * h - bh / 2f)));
+        int gx = 12, gy = 4;
+        int[] out = new int[gx * gy * 3];
+        for (int cy = 0; cy < gy; cy++) {
+            for (int cx = 0; cx < gx; cx++) {
+                int x0 = l + cx * bw / gx, x1 = l + (cx + 1) * bw / gx, y0 = t + cy * bh / gy, y1 = t + (cy + 1) * bh / gy;
+                long sr = 0, sg = 0, sb = 0, n = 0;
+                for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) {
+                    int c = px[y * w + x];
+                    sr += (c >> 16) & 255; sg += (c >> 8) & 255; sb += c & 255; n++;
+                }
+                int k = (cy * gx + cx) * 3;
+                if (n > 0) { out[k] = (int) (sr / n); out[k + 1] = (int) (sg / n); out[k + 2] = (int) (sb / n); }
+            }
+        }
+        return out;
+    }
+
     public void close() { recognizer.close(); }
 }

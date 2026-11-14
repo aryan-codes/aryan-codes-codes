@@ -9,9 +9,12 @@ import java.util.regex.Pattern;
  * so the safety rules can be tested off the phone.
  *
  * Rules:
- *  - Before every trade, the DEMO badge must read "DEMO" and be highlighted, and the REAL badge must
- *    read "REAL" and be clearly less highlighted. If that can't be confirmed, auto-trading stops for
- *    the session.
+ *  - Arming (start of a session): text recognition must read "DEMO" on the DEMO badge while it is the
+ *    highlighted badge. Up to ARM_ATTEMPTS frames are tried. A reference picture of both badges is
+ *    then taken.
+ *  - Before every trade: both badges must still look like their reference pictures and DEMO must
+ *    still be the highlighted one. If not (e.g. the account was switched to REAL), auto-trading stops
+ *    for the session. No trade is ever placed before arming succeeds.
  *  - One trade at a time. The balance is read just before the tap and again after expiry; the change
  *    is the broker's own result: about +stake*payout = won, -stake = lost, 0 = refund.
  *  - Stops after maxTrades trades or once the broker-graded net loss reaches stopLoss.
@@ -29,7 +32,13 @@ public final class AutoTrader {
         String readText(Region r);
         /** Fraction of pixels in the region that are strongly coloured (a highlighted badge). */
         double highlighted(Region r);
+        /** A small colour fingerprint of the region (same length every call). */
+        int[] fingerprint(Region r);
     }
+
+    static final int ARM_ATTEMPTS = 30;
+    /** Mean colour difference (0-255) above which a badge no longer looks like its reference. */
+    static final double FINGERPRINT_TOLERANCE = 28;
 
     public interface Tapper {
         /** Tap at a point given in screen fractions. False if the tap service isn't running. */
@@ -52,6 +61,10 @@ public final class AutoTrader {
     public double net;
     private long lastSettledAt = 0;
     private int balanceFails = 0;
+    public boolean armed;
+    private int armAttempts = 0;
+    private int[] demoRef, realRef;
+    public String armStatus = "confirming DEMO…";
 
     public static final class Pending {
         public long openedAt, settleAt;
@@ -106,6 +119,27 @@ public final class AutoTrader {
         }
 
         if (!enabled || stopped || !configured()) return null;
+
+        // arm once per session: read "DEMO" on the highlighted badge, then remember how both look
+        if (!armed) {
+            String problem = armProblem(s);
+            if (problem == null) {
+                demoRef = s.fingerprint(demo);
+                realRef = s.fingerprint(real);
+                armed = true;
+                armStatus = "DEMO confirmed";
+                Event e = new Event(); e.type = "armed"; e.detail = armStatus; return e;
+            }
+            armAttempts++;
+            armStatus = "confirming DEMO… (" + problem + ")";
+            if (armAttempts >= ARM_ATTEMPTS) {
+                stop("couldn't confirm DEMO at start: " + problem
+                    + ". Check DEMO is selected, then re-mark the DEMO badge (long-press the dot)");
+                Event e = new Event(); e.type = "stop"; e.detail = stopReason; return e;
+            }
+            return null;
+        }
+
         int dir = "CALL".equals(signal) ? 1 : "PUT".equals(signal) ? -1 : 0;
         if (dir == 0) return null;
         if (now - lastSettledAt < 1000) return null;
@@ -148,16 +182,43 @@ public final class AutoTrader {
         return e;
     }
 
-    /** Null if DEMO is confirmed, else the reason. */
-    String demoProblem(Screen s) {
-        String dt = s.readText(demo), rt = s.readText(real);
-        if (dt == null || rt == null) return "badge text unreadable";
-        if (!norm(dt).contains("DEMO")) return "DEMO badge reads \"" + dt.trim() + "\"";
-        if (!norm(rt).contains("REAL")) return "REAL badge reads \"" + rt.trim() + "\"";
+    /** Arming check, with text recognition. Null if DEMO is confirmed, else the reason. */
+    String armProblem(Screen s) {
         double dh = s.highlighted(demo), rh = s.highlighted(real);
         if (dh < 0.25) return "DEMO badge isn't highlighted";
         if (rh > dh * 0.5) return "REAL badge looks highlighted";
+        String dt = s.readText(demo);
+        if (dt == null || !looksLike(dt, "DEMO")) return "DEMO badge reads \"" + (dt == null ? "" : dt.trim()) + "\"";
         return null;
+    }
+
+    /** Per-trade check, without text recognition. Null if still on DEMO, else the reason. */
+    String demoProblem(Screen s) {
+        double dh = s.highlighted(demo), rh = s.highlighted(real);
+        if (dh < 0.25) return "DEMO badge isn't highlighted";
+        if (rh > dh * 0.5) return "REAL badge looks highlighted";
+        if (diff(s.fingerprint(demo), demoRef) > FINGERPRINT_TOLERANCE) return "DEMO badge changed";
+        if (diff(s.fingerprint(real), realRef) > FINGERPRINT_TOLERANCE) return "REAL badge changed";
+        return null;
+    }
+
+    static double diff(int[] a, int[] b) {
+        if (a == null || b == null || a.length != b.length || a.length == 0) return Double.MAX_VALUE;
+        long d = 0;
+        for (int i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]);
+        return (double) d / a.length;
+    }
+
+    /** True if the text contains the word, allowing one wrong letter (OCR slips like DEM0, DFMO). */
+    public static boolean looksLike(String text, String word) {
+        String t = norm(text);
+        if (t.contains(word)) return true;
+        for (int i = 0; i + word.length() <= t.length(); i++) {
+            int bad = 0;
+            for (int k = 0; k < word.length(); k++) if (t.charAt(i + k) != word.charAt(k)) bad++;
+            if (bad <= 1) return true;
+        }
+        return false;
     }
 
     String classify(double delta) {
@@ -176,6 +237,15 @@ public final class AutoTrader {
         e.delta = after - pending.before;
         e.outcome = outcome;
         return e;
+    }
+
+    /** Start arming again (after the badges were re-marked). */
+    public void resetArming() {
+        armed = false;
+        armAttempts = 0;
+        demoRef = null;
+        realRef = null;
+        armStatus = "confirming DEMO…";
     }
 
     public void stop(String reason) {
@@ -209,6 +279,7 @@ public final class AutoTrader {
         s += ", net " + money(net);
         if (stopped) s += " · stopped: " + stopReason;
         else if (!enabled) s += " · off";
+        else if (!armed) s += " · " + armStatus;
         return s;
     }
 }
