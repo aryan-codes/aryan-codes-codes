@@ -73,8 +73,9 @@ public class MainActivity extends Activity {
         col.addView(text("Minimum backtest hit rate to signal (%)", 14, true));
         minHitField = number(p.getInt("minHit", 65));
         col.addView(minHitField);
-        col.addView(text("Each read, both models are replayed on the visible chart. A CALL or PUT is shown only "
-            + "if both agree and their agreeing calls were right at least this often.", 12, false));
+        col.addView(text("Each read, SINDy-PI, the neural net and momentum are replayed on the visible chart. "
+            + "Their votes are weighted by how well they did recently, and a CALL or PUT is shown only if the "
+            + "combined vote was right at least this often.", 12, false));
 
         col.addView(text("Milliseconds between reads", 14, true));
         intervalField = number(p.getInt("intervalMs", 1000));

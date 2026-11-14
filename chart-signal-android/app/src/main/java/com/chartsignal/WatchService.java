@@ -325,11 +325,11 @@ public class WatchService extends Service {
     private void show(Predictor.Result r, ChartExtractor.Curve c, double dt) {
         if (dot == null) return;
         lastSignalAt = SystemClock.elapsedRealtime();
-        String sBt = r.btTotal == 0 ? "-" : Math.round(100.0 * r.btSindyHits / r.btTotal) + "%";
-        String nBt = r.btTotal == 0 ? "-" : Math.round(100.0 * r.btNnHits / r.btTotal) + "%";
-        detail = "SINDy-PI " + (r.sindyDelta >= 0 ? "↑" : "↓") + " (backtest " + sBt + ")"
-            + "\nNeural net " + (r.nnDelta >= 0 ? "↑" : "↓") + " (backtest " + nBt + ")"
+        detail = line("SINDy-PI", r.sindyDelta, r.sindyAcc, r.sindyW)
+            + "\n" + line("Neural net", r.nnDelta, r.nnAcc, r.nnW)
+            + "\n" + line("Momentum", r.momDelta, r.momAcc, r.momW)
             + "\n" + r.why
+            + String.format("\nensemble backtest %d%% over %d calls", Math.round(r.ensAcc * 100), r.ensCalls)
             + "\n" + r.sindyInfo
             + String.format("\n%d pts, %.1f s each, horizon %d", c.n, dt, r.h);
         if ("CALL".equals(r.signal)) { paintDot(0xFF1DB954, "CALL", Color.WHITE); headline = "CALL · " + (int) expirySec + "s"; }
@@ -337,6 +337,11 @@ public class WatchService extends Service {
         else { paintDot(Color.WHITE, "WAIT", 0xFF202020); headline = shorten(r.why); }
         spark.set(c.p, c.n, r.forecastPath, r.signal);
         refreshDetail();
+    }
+
+    private static String line(String name, double delta, double acc, double weight) {
+        return name + " " + (delta >= 0 ? "↑" : "↓") + "  recent hit " + Math.round(acc * 100)
+            + "%  vote " + Math.round(weight * 100) + "%";
     }
 
     private void setWait(String why, String more) {

@@ -17,23 +17,35 @@ Everything runs on the phone. The app has no internet permission.
    polynomial terms in (x, v) plus implicit terms `a, a·x, a·v` (a = acceleration) is fit with
    sequentially thresholded ridge regression, once per implicit left-hand side. The candidate with
    the lowest held-out error is kept and integrated forward over the expiry.
-3. **Neural net** (`TinyMlp`): 16 inputs (recent price steps) → 12 tanh → 1 output (change over the
-   expiry). Trained from scratch on the visible chart each read, with Adam and a fixed seed.
-4. **Backtest gate** (`Predictor`): both models are refit at 20 earlier points on the same chart and
-   checked against what happened next. A signal is shown only when both models agree now, at least
-   10 backtest points had them agreeing, and those agreeing calls hit at least the bar you set
-   (default 65%).
+3. **Neural net** (`TinyMlp`): 16 recent price steps plus 4 trend-strength inputs (slope over 16 and
+   32 steps, efficiency ratio, new-high/new-low breakout flag) → 12 tanh → 1 output (change over the
+   expiry). Trained from scratch on the visible chart each read; recent samples weigh more.
+4. **Momentum**: the least-squares slope of the last max(10, expiry) points, carried forward.
+5. **Weighted vote** (`Predictor`): all three are refit at 20 earlier checkpoints on the same chart.
+   Each model's vote weight is its recent hit rate above 50% (newer checkpoints count more), so the
+   model that suits the current regime (trend or range) leads. A signal needs:
+   - a clear vote (at least 34% net in one direction),
+   - at least 8 backtest calls by the combined vote, with a recency-weighted hit rate above your bar
+     (default 65%, raised automatically when checkpoints are crowded together),
+   - no clean fresh move (efficiency > 0.35 over the last expiry) against the call, unless the
+     backtest is 85%+. A move younger than the expiry has no scored checkpoint yet, so this stops
+     the app betting on a reversal of a trend it can't evaluate.
 
-## Tested so far (synthetic data, desktop JVM)
+## Tested so far (synthetic data, desktop JVM, 60 charts each, expiry = 20 of 240 points)
 
-| Series | Backtest hit rate when both agree | Signals given | Signals correct |
-|---|---|---|---|
-| Damped oscillator + noise (predictable) | 98% | 45/60 | 31/45 |
-| Trend + noise | 78% | 32/60 | 30/32 |
-| Random walk (unpredictable) | 50% | 3/60 | 1/3 |
+| Chart | Previous version: signals (correct) | Current: signals (correct) |
+|---|---|---|
+| Range, then trend in the last 20 points | 6 (0) | 2 (2) |
+| Range, then trend in the last 40 points | 6 (6) | 13 (13) |
+| Range, then trend in the last 60 points | 9 (9) | 36 (36) |
+| Steady trend + noise | 38 (37) | 46 (42) |
+| Pure range (mean-reverting) | 17 (11) | 17 (11) |
+| Oscillator | 60 (60) | 60 (60) |
+| Random walk | 3 (3) | 6 (4) |
+| Random walk, expiry 5 points | 3 (1) | 2 (0) |
 
-The extractor recovered a rendered candlestick chart with grid lines, a price line and a price tag
-at correlation 0.96. Not yet tested on a real phone or a real trading app.
+The extractor recovered a rendered candlestick chart at correlation 0.96. Not yet tested on a real
+phone or a real trading app.
 
 ## Build
 
