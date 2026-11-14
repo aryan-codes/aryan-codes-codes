@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="tap_service_description">Lets Chart Signal tap the BUY and SELL buttons for the demo-only test bot. It only taps when the auto-trader is switched on and the DEMO account is confirmed on screen. It doesn\'t read other apps\' content.</string>
+</resources>

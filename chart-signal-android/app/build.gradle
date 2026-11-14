@@ -19,3 +19,9 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 }
+
+dependencies {
+    // on-device text recognition (bundled model, works offline): reads the DEMO/REAL badges and the
+    // balance for the demo-only auto-trader
+    implementation "com.google.mlkit:text-recognition:16.0.0"
+}

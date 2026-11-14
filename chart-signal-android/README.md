@@ -73,6 +73,22 @@ Simulated tests:
   line found on 647/647 reads, 615 joined, measured span 70 s, 51 trades scored (7 unscored),
   47/51 scored correctly.
 
+## Demo-only auto-trader (test bot)
+
+`AutoTrader` + `TapService` (an accessibility service that only taps) + `TextReader` (ML Kit on-device
+text recognition). Off by default.
+
+- Before every trade it reads the DEMO and REAL badges: DEMO must read "DEMO" and be highlighted,
+  REAL must read "REAL" and be clearly less highlighted. Otherwise it stops for the session. It never
+  trades on a REAL account.
+- One trade at a time, on every CALL/PUT signal, by tapping the BUY/SELL positions you marked.
+- Each trade is graded by the broker's own balance: read just before the tap and again after expiry
+  (+stake*payout = won, -stake = lost, unchanged = refund, anything else = unclear and not counted).
+- Stops after a trade limit or a balance drop you set. Every trade is logged in the recording.
+
+The safety and grading rules are covered by an off-device test (20 checks: REAL selected, badges
+swapped, both highlighted, unreadable badges, tap service off, stop-loss, trade cap, balance parsing).
+
 ## Build
 
 GitHub Actions builds `app-debug.apk` on every push that touches this folder

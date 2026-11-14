@@ -92,6 +92,18 @@ public class WatchService extends Service {
     private Recorder recorder;
     private volatile String scoreLine = "";
 
+    // demo-only auto-trader (worker thread)
+    private AutoTrader trader;
+    private TextReader textReader;
+    private volatile String autoLine = "";
+    static final String[] MARK_KEYS = {"buy", "sell", "demo", "real", "balance"};
+    static final String[] MARK_PROMPTS = {
+        "Tap the middle of the BUY (up) button",
+        "Tap the middle of the SELL (down) button",
+        "Tap the middle of the DEMO badge",
+        "Tap the middle of the REAL badge",
+        "Tap the middle of your balance amount"};
+
     // overlay
     private WindowManager wm;
     private LinearLayout overlay;
@@ -165,6 +177,15 @@ public class WatchService extends Service {
         boxR = p.getFloat("boxR", 0); boxB = p.getFloat("boxB", 0);
         recordOn = p.getBoolean("record", true);
         imagesOn = p.getBoolean("images", false);
+        if (p.getBoolean("auto", false)) {
+            trader = new AutoTrader();
+            trader.enabled = true;
+            trader.maxTrades = p.getInt("autoMax", 100);
+            trader.stopLoss = p.getInt("autoStop", 1000);
+            trader.stake = p.getInt("autoStake", 50);
+            trader.expiryMs = Math.round(expirySec * 1000);
+            loadMarks(p);
+        }
     }
 
     // ---------------- capture + analysis ----------------
@@ -215,6 +236,7 @@ public class WatchService extends Service {
         try {
             int l = Math.round(boxL * capW), t = Math.round(boxT * capH);
             int r0 = Math.round(boxR * capW), b = Math.round(boxB * capH);
+            if (trader != null && trader.pending != null) autoStep(now, "NO_TRADE", px);
             ChartExtractor.Curve c = ChartExtractor.extract(px, capW, capH, l, t, r0, b, MAX_POINTS);
             if (recorder != null) recorder.maybeImage(px, capW, capH, l, t, r0, b, now);
             if (c == null) {
@@ -239,6 +261,7 @@ public class WatchService extends Service {
             if (opened != null) logTrade("open", opened);
             scoreLine = scorer.summary() + (scorer.hasOpen() ? " · 1 open" : "");
             logRead(now, c, dt, r);
+            autoStep(now, r.signal, px);
 
             if (r.hMax > 0 && h > r.hMax) {
                 int seen = (int) Math.round(c.n * dt);
@@ -260,6 +283,42 @@ public class WatchService extends Service {
         } finally {
             busy = false;
         }
+    }
+
+    private void loadMarks(SharedPreferences p) {
+        if (trader == null) return;
+        AutoTrader.Region[] r = new AutoTrader.Region[5];
+        for (int i = 0; i < 5; i++) {
+            float x = p.getFloat("m_" + MARK_KEYS[i] + "X", -1), y = p.getFloat("m_" + MARK_KEYS[i] + "Y", -1);
+            if (x < 0) return;
+            float w = i == 4 ? 0.36f : i >= 2 ? 0.12f : 0.1f, h = i == 4 ? 0.04f : 0.035f;
+            r[i] = new AutoTrader.Region(x, y, w, h);
+        }
+        trader.buy = r[0]; trader.sell = r[1]; trader.demo = r[2]; trader.real = r[3]; trader.balance = r[4];
+    }
+
+    private AutoTrader.Screen screenOf(final int[] px) {
+        if (textReader == null) textReader = new TextReader();
+        return new AutoTrader.Screen() {
+            @Override public String readText(AutoTrader.Region r) { return textReader.read(px, capW, capH, r); }
+            @Override public double highlighted(AutoTrader.Region r) { return TextReader.highlighted(px, capW, capH, r); }
+        };
+    }
+
+    private void autoStep(long now, String signal, int[] px) {
+        if (trader == null) return;
+        if (!trader.configured()) { autoLine = "AUTO (demo): mark the buttons first (long-press the dot)"; return; }
+        AutoTrader.Event ev = trader.step(now, signal, screenOf(px), TapService::tap);
+        autoLine = trader.summary() + (trader.pending != null ? " · trade open" : "");
+        if (ev == null || recorder == null) return;
+        try {
+            JSONObject o = new JSONObject().put("type", "auto").put("t", now).put("event", ev.type)
+                .put("dir", ev.dir).put("detail", ev.detail);
+            if (ev.outcome != null) o.put("outcome", ev.outcome);
+            if (!Double.isNaN(ev.before)) o.put("before", ev.before);
+            if (!Double.isNaN(ev.after)) o.put("after", ev.after);
+            recorder.write(o);
+        } catch (Exception ignored) { }
     }
 
     /** If stitching shows the chart scrolls faster or slower than the setting implies, say so. */
@@ -406,6 +465,7 @@ public class WatchService extends Service {
     private void refreshDetail() {
         if (label == null) return;
         String head = scoreLine.isEmpty() ? headline : headline + "\n" + scoreLine;
+        if (!autoLine.isEmpty()) head += "\n" + autoLine;
         label.setText(expanded && !detail.isEmpty() ? head + "\n" + detail : head);
         spark.setVisibility(expanded ? View.VISIBLE : View.GONE);
     }
@@ -538,6 +598,11 @@ public class WatchService extends Service {
         Button save = new Button(this); save.setText("Save box");
         Button cancel = new Button(this); cancel.setText("Cancel");
         bar.addView(cancel); bar.addView(save);
+        if (trader != null) {
+            Button mark = new Button(this); mark.setText("Mark buttons");
+            mark.setOnClickListener(v -> { closeSelector(); main.post(this::openMarker); });
+            bar.addView(mark);
+        }
         FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         blp.bottomMargin = dp(48);
@@ -556,6 +621,63 @@ public class WatchService extends Service {
         });
         cancel.setOnClickListener(v -> closeSelector());
 
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.TOP | Gravity.START;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        }
+        wm.addView(selector, lp);
+    }
+
+    /** Five taps: BUY, SELL, DEMO badge, REAL badge, balance. Saved as screen fractions. */
+    private void openMarker() {
+        if (selector != null || wm == null) return;
+        DisplayMetrics dm = realMetrics();
+        final int sw = dm.widthPixels, sh = dm.heightPixels;
+        final float[] pts = new float[10];
+        final int[] step = {0};
+        selector = new FrameLayout(this);
+        View canvas = new View(this) {
+            final Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG), dotP = new Paint(Paint.ANTI_ALIAS_FLAG);
+            {
+                txt.setColor(Color.WHITE); txt.setTextSize(dp(16)); txt.setShadowLayer(4, 0, 0, Color.BLACK);
+                dotP.setColor(0xFFFFC107);
+            }
+            @Override protected void onDraw(Canvas c) {
+                c.drawColor(0x44000000);
+                for (int i = 0; i < step[0]; i++) c.drawCircle(pts[2 * i], pts[2 * i + 1], dp(8), dotP);
+                if (step[0] < 5) c.drawText((step[0] + 1) + "/5  " + MARK_PROMPTS[step[0]], dp(16), sh * 0.5f, txt);
+            }
+            @Override public boolean onTouchEvent(MotionEvent e) {
+                if (e.getAction() != MotionEvent.ACTION_UP || step[0] >= 5) return true;
+                pts[2 * step[0]] = e.getRawX();
+                pts[2 * step[0] + 1] = e.getRawY();
+                step[0]++;
+                invalidate();
+                if (step[0] == 5) {
+                    SharedPreferences.Editor ed = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE).edit();
+                    for (int i = 0; i < 5; i++) {
+                        ed.putFloat("m_" + MARK_KEYS[i] + "X", pts[2 * i] / sw);
+                        ed.putFloat("m_" + MARK_KEYS[i] + "Y", pts[2 * i + 1] / sh);
+                    }
+                    ed.apply();
+                    loadMarks(getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE));
+                    postDelayed(() -> { closeSelector(); headline = "buttons marked"; refreshDetail(); }, 400);
+                }
+                return true;
+            }
+        };
+        selector.addView(canvas, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        Button cancel = new Button(this); cancel.setText("Cancel");
+        cancel.setOnClickListener(v -> closeSelector());
+        FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
+        blp.topMargin = dp(48); blp.rightMargin = dp(16);
+        selector.addView(cancel, blp);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -611,6 +733,7 @@ public class WatchService extends Service {
         worker.shutdown();
         try { worker.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS); } catch (InterruptedException ignored) { }
         if (recorder != null) recorder.close();
+        if (textReader != null) textReader.close();
         closeSelector();
         if (overlay != null && wm != null) {
             try { wm.removeView(overlay); } catch (Exception ignored) { }

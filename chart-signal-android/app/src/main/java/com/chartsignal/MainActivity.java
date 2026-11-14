@@ -28,7 +28,9 @@ public class MainActivity extends Activity {
     private static final int REQ_EXPORT = 8;
 
     private EditText spanField, expiryField, minHitField, intervalField;
-    private CheckBox recordBox, imagesBox;
+    private CheckBox recordBox, imagesBox, autoBox;
+    private EditText autoMaxField, autoStopField, autoStakeField;
+    private TextView tapStatus;
     private TextView recStatus;
 
     private int dp(float v) {
@@ -108,6 +110,36 @@ public class MainActivity extends Activity {
         col.addView(recRow);
         refreshRecStatus();
 
+        col.addView(text("Demo auto-trader (test bot)", 14, true));
+        col.addView(text("Taps BUY or SELL on every signal, one trade at a time, and grades each trade from "
+            + "your broker balance. Before every trade it reads the account badges and only trades if DEMO "
+            + "is selected; if it can't confirm that, it stops. It never trades on a REAL account.\n"
+            + "Don't trade by hand while it runs (that confuses the balance grading). Many brokers' terms "
+            + "forbid bots, even on demo accounts.", 12, false));
+        autoBox = new CheckBox(this);
+        autoBox.setText("Auto-trade signals on DEMO");
+        autoBox.setChecked(p.getBoolean("auto", false));
+        col.addView(autoBox);
+        col.addView(text("Your trade amount ($), as set in the trading app", 13, false));
+        autoStakeField = number(p.getInt("autoStake", 50));
+        col.addView(autoStakeField);
+        col.addView(text("Stop after this many trades", 13, false));
+        autoMaxField = number(p.getInt("autoMax", 100));
+        col.addView(autoMaxField);
+        col.addView(text("Stop once the demo balance is down this much ($)", 13, false));
+        autoStopField = number(p.getInt("autoStop", 1000));
+        col.addView(autoStopField);
+        tapStatus = text("", 12, false);
+        col.addView(tapStatus);
+        Button a11y = new Button(this);
+        a11y.setText("Turn on the tap service");
+        a11y.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        col.addView(a11y);
+        col.addView(text("In Accessibility, open Chart Signal and turn it on. If Android says it's a restricted "
+            + "setting: Settings > Apps > Chart Signal > ⋮ > Allow restricted settings, then try again.\n"
+            + "Then start watching, long-press the dot, tap Mark buttons and tap BUY, SELL, the DEMO badge, "
+            + "the REAL badge and your balance when asked. Keep the dot away from the BUY/SELL buttons.", 12, false));
+
         Button start = new Button(this);
         start.setText("Start watching");
         start.setOnClickListener(v -> onStartClicked());
@@ -154,6 +186,10 @@ public class MainActivity extends Activity {
             .putInt("intervalMs", parse(intervalField, 1000, 300, 60000))
             .putBoolean("record", recordBox.isChecked())
             .putBoolean("images", imagesBox.isChecked())
+            .putBoolean("auto", autoBox.isChecked())
+            .putInt("autoStake", parse(autoStakeField, 50, 1, 100000))
+            .putInt("autoMax", parse(autoMaxField, 100, 1, 10000))
+            .putInt("autoStop", parse(autoStopField, 1000, 1, 1000000))
             .apply();
 
         if (!Settings.canDrawOverlays(this)) {
@@ -173,6 +209,8 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (recStatus != null) refreshRecStatus();
+        if (tapStatus != null) tapStatus.setText(TapService.isOn()
+            ? "Tap service: on" : "Tap service: off (needed for auto-trading)");
     }
 
     private void refreshRecStatus() {
