@@ -83,9 +83,14 @@ text recognition). Off by default.
 - Before every trade: DEMO must still be the highlighted badge and both badges must still match their
   fingerprints. If the account is switched to REAL the highlight moves and it stops for the session.
   It never trades on a REAL account and never trades before arming succeeds.
-- One trade at a time, on every CALL/PUT signal, by tapping the BUY/SELL positions you marked.
-- Each trade is graded by the broker's own balance: read just before the tap and again after expiry
-  (+stake*payout = won, -stake = lost, unchanged = refund, anything else = unclear and not counted).
+- Taps BUY/SELL on CALL/PUT signals at the positions you marked, with up to N trades open at once
+  (setting, 1-5), new trades at least 4 s apart.
+- Each trade is graded by the broker's own balance through a running ledger: the balance after each
+  expiry is compared with what it should be given every open trade (lost / refund / won, anything else
+  = unclear and not counted). The first trade of each session runs alone while the app checks whether
+  the broker takes the stake when a trade opens or at expiry.
+  Simulated broker test: 1,819 trades across both stake timings, 5 s and 30 s expiry, 1 and 3 open
+  trades: 0 graded wrong.
 - Stops after a trade limit or a balance drop you set. Every trade is logged in the recording.
 
 The safety and grading rules are covered by off-device tests (29 checks: REAL selected, badges

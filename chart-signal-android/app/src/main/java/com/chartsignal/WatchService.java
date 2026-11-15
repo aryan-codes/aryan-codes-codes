@@ -184,6 +184,7 @@ public class WatchService extends Service {
             trader.stopLoss = p.getInt("autoStop", 1000);
             trader.stake = p.getInt("autoStake", 50);
             trader.expiryMs = Math.round(expirySec * 1000);
+            trader.maxOpen = p.getInt("autoMaxOpen", 1);
             loadMarks(p);
         }
     }
@@ -236,7 +237,7 @@ public class WatchService extends Service {
         try {
             int l = Math.round(boxL * capW), t = Math.round(boxT * capH);
             int r0 = Math.round(boxR * capW), b = Math.round(boxB * capH);
-            if (trader != null && (trader.pending != null || !trader.armed)) autoStep(now, "NO_TRADE", px);
+            if (trader != null && (trader.hasOpen() || !trader.armed)) autoStep(now, "NO_TRADE", px);
             ChartExtractor.Curve c = ChartExtractor.extract(px, capW, capH, l, t, r0, b, MAX_POINTS);
             if (recorder != null) recorder.maybeImage(px, capW, capH, l, t, r0, b, now);
             if (c == null) {
@@ -310,7 +311,7 @@ public class WatchService extends Service {
         if (trader == null) return;
         if (!trader.configured()) { autoLine = "AUTO (demo): mark the buttons first (long-press the dot)"; return; }
         AutoTrader.Event ev = trader.step(now, signal, screenOf(px), TapService::tap);
-        autoLine = trader.summary() + (trader.pending != null ? " · trade open" : "");
+        autoLine = trader.summary();
         if (ev == null || recorder == null) return;
         try {
             JSONObject o = new JSONObject().put("type", "auto").put("t", now).put("event", ev.type)

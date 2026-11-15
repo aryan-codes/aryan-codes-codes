@@ -51,7 +51,12 @@ public final class AutoTrader {
     public double stopLoss = 1000;
     public double stake = 50;
     public long expiryMs = 5000;
-    public long settleDelayMs = 2500;
+    /** Read the balance this long after a trade's expiry, to give the broker time to pay out. */
+    public long settleDelayMs = 1500;
+    /** How many trades may be open at once. */
+    public int maxOpen = 1;
+    /** Minimum time between two opens, so each expiry's balance change can be read on its own. */
+    public long minSpacingMs = 4000;
 
     // state
     public boolean enabled;
@@ -59,7 +64,12 @@ public final class AutoTrader {
     public String stopReason = "";
     public int trades, won, lost, refunds, unclear;
     public double net;
-    private long lastSettledAt = 0;
+    private long lastSettledAt = 0, lastOpenAt = -1_000_000;
+    /** Balance we expect to see, given every open and settled trade; NaN = not known yet. */
+    private double expected = Double.NaN;
+    /** When the broker takes the stake: 0 = not known yet, 1 = when the trade opens, 2 = at expiry.
+     *  Found from the first trade; until then only one trade is open at a time. */
+    public int stakeMode = 0;
     private int balanceFails = 0;
     public boolean armed;
     private int armAttempts = 0;
@@ -71,7 +81,9 @@ public final class AutoTrader {
         public int dir;
         public double before;
     }
-    public Pending pending;
+    /** Open trades, oldest (earliest expiry) first. */
+    public final java.util.ArrayList<Pending> open = new java.util.ArrayList<>();
+    public boolean hasOpen() { return !open.isEmpty(); }
 
     /** What happened on this step, for the log and the overlay; null if nothing. */
     public static final class Event {
@@ -87,35 +99,58 @@ public final class AutoTrader {
     }
 
     public Event step(long now, String signal, Screen s, Tapper tapper) {
-        // settle the open trade from the broker's balance
-        if (pending != null) {
-            if (now < pending.settleAt) return null;
+        // 1. settle the oldest open trade once its expiry has passed, from the broker's balance.
+        //    The ledger: 'expected' already has every open trade's stake taken off, so after a
+        //    settlement the balance is expected + 0 (lost), + stake (refund) or + stake + payout (won).
+        if (!open.isEmpty() && now >= open.get(0).settleAt) {
+            Pending p = open.get(0);
             Double after = parseBalance(s.readText(balance));
             if (after == null) {
-                if (now > pending.settleAt + 8000) {
+                if (now > p.settleAt + 8000) {
                     unclear++;
-                    Event e = settleEvent(Double.NaN, "unclear");
-                    e.detail = "couldn't read the balance after expiry";
-                    pending = null;
+                    open.remove(0);
+                    expected = Double.NaN;
                     lastSettledAt = now;
+                    Event e = settleEvent(p, Double.NaN, Double.NaN, "unclear");
+                    e.detail = "couldn't read the balance after expiry";
                     return e;
                 }
                 return null;
             }
-            double delta = after - pending.before;
-            String outcome = classify(delta);
+            double delta = after - expected;
+            // stake taken at expiry: the payout arrives with the stake removed, so shift by one stake
+            if (stakeMode == 2) delta += stake;
+            String outcome = Double.isNaN(delta) ? "unclear" : classify(delta);
+            double profit = 0;
             switch (outcome) {
-                case "won": won++; net += delta; break;
-                case "lost": lost++; net += delta; break;
+                case "won": won++; profit = delta - stake; break;
+                case "lost": lost++; profit = -stake; break;
                 case "refund": refunds++; break;
                 default: unclear++; break;
             }
-            Event e = settleEvent(after, outcome);
-            pending = null;
+            net += profit;
+            open.remove(0);
+            // if the result was unclear, the ledger can't be trusted until it re-syncs
+            expected = "unclear".equals(outcome) ? Double.NaN : after;
             lastSettledAt = now;
+            Event e = settleEvent(p, after, profit, outcome);
             if (net <= -stopLoss) stop("stop-loss reached (" + money(net) + ")");
-            else if (trades >= maxTrades) stop("trade limit reached (" + trades + ")");
+            else if (trades >= maxTrades && open.isEmpty()) stop("trade limit reached (" + trades + ")");
             return e;
+        }
+
+        // learn when the broker takes the stake: look at the balance a moment after the first trade opens
+        if (stakeMode == 0 && open.size() == 1) {
+            Pending p = open.get(0);
+            if (now - p.openedAt >= 1200 && now < p.settleAt - settleDelayMs - 300) {
+                Double b = parseBalance(s.readText(balance));
+                if (b != null) {
+                    double tol = Math.max(0.5, stake * 0.01);
+                    if (Math.abs(b - (p.before - stake)) <= tol) stakeMode = 1;
+                    else if (Math.abs(b - p.before) <= tol) { stakeMode = 2; expected += stake; }
+                }
+                return null;
+            }
         }
 
         if (!enabled || stopped || !configured()) return null;
@@ -140,9 +175,15 @@ public final class AutoTrader {
             return null;
         }
 
+        // 2. open a new trade
         int dir = "CALL".equals(signal) ? 1 : "PUT".equals(signal) ? -1 : 0;
         if (dir == 0) return null;
-        if (now - lastSettledAt < 1000) return null;
+        if (trades >= maxTrades) return null;
+        if (open.size() >= (stakeMode == 0 ? 1 : maxOpen)) return null;
+        if (now - lastOpenAt < minSpacingMs) return null;
+        if (now - lastSettledAt < 500) return null;
+        // don't open right before a settlement is due: its balance read must see only that trade
+        if (!open.isEmpty() && open.get(0).settleAt - now < 1500) return null;
 
         // safety: confirm DEMO right before trading
         String why = demoProblem(s);
@@ -163,22 +204,35 @@ public final class AutoTrader {
             Event e = new Event(); e.type = "skip"; e.detail = "balance unreadable"; return e;
         }
         balanceFails = 0;
+        if (open.isEmpty()) {
+            expected = before;
+        } else {
+            // with trades open, the balance must match the ledger; otherwise something else moved it
+            // (a manual trade, a payout not seen yet), so wait
+            if (Double.isNaN(expected) || Math.abs(before - expected) > Math.max(0.5, stake * 0.01)) {
+                Event e = new Event(); e.type = "skip"; e.detail = "balance doesn't match open trades; waiting"; return e;
+            }
+        }
 
         Region target = dir > 0 ? buy : sell;
         if (!tapper.tap(target.cx, target.cy)) {
             stop("tap service is off (turn it on in Accessibility settings)");
             Event e = new Event(); e.type = "stop"; e.detail = stopReason; return e;
         }
-        pending = new Pending();
-        pending.openedAt = now;
-        pending.settleAt = now + expiryMs + settleDelayMs;
-        pending.dir = dir;
-        pending.before = before;
+        Pending p = new Pending();
+        p.openedAt = now;
+        p.settleAt = now + expiryMs + settleDelayMs;
+        p.dir = dir;
+        p.before = before;
+        open.add(p);
+        if (stakeMode != 2) expected -= stake;
+        lastOpenAt = now;
         trades++;
         Event e = new Event();
         e.type = "open";
         e.dir = dir;
         e.before = before;
+        e.detail = open.size() + " open";
         return e;
     }
 
@@ -221,21 +275,24 @@ public final class AutoTrader {
         return false;
     }
 
+    /** delta = balance after settlement minus the ledger (which already had the stake taken off). */
     String classify(double delta) {
-        if (Math.abs(delta) <= 0.5) return "refund";
-        if (delta < 0 && Math.abs(delta + stake) <= Math.max(1, stake * 0.02)) return "lost";
-        if (delta > 0 && delta <= stake * 1.0 + 0.5) return "won";
+        double tol = Math.max(0.5, stake * 0.01);
+        if (Math.abs(delta) <= tol) return "lost";
+        if (Math.abs(delta - stake) <= tol) return "refund";
+        if (delta > stake + tol && delta <= 2 * stake + tol) return "won";
         return "unclear";   // a different amount: a manual trade, a misread, a deposit…
     }
 
-    private Event settleEvent(double after, String outcome) {
+    private Event settleEvent(Pending p, double after, double profit, String outcome) {
         Event e = new Event();
         e.type = "settle";
-        e.dir = pending.dir;
-        e.before = pending.before;
+        e.dir = p.dir;
+        e.before = p.before;
         e.after = after;
-        e.delta = after - pending.before;
+        e.delta = profit;
         e.outcome = outcome;
+        e.detail = "opened " + p.openedAt;
         return e;
     }
 
@@ -277,6 +334,7 @@ public final class AutoTrader {
         String s = "AUTO (demo): " + trades + " trades, " + won + "W " + lost + "L";
         if (dec > 0) s += " (" + Math.round(100.0 * won / dec) + "%)";
         s += ", net " + money(net);
+        if (!open.isEmpty()) s += " · " + open.size() + " open";
         if (stopped) s += " · stopped: " + stopReason;
         else if (!enabled) s += " · off";
         else if (!armed) s += " · " + armStatus;

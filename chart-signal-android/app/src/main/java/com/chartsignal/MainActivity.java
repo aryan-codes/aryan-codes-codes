@@ -29,7 +29,7 @@ public class MainActivity extends Activity {
 
     private EditText spanField, expiryField, minHitField, intervalField;
     private CheckBox recordBox, imagesBox, autoBox;
-    private EditText autoMaxField, autoStopField, autoStakeField;
+    private EditText autoMaxField, autoStopField, autoStakeField, autoOpenField;
     private TextView tapStatus;
     private TextView recStatus;
 
@@ -123,6 +123,12 @@ public class MainActivity extends Activity {
         col.addView(text("Your trade amount ($), as set in the trading app", 13, false));
         autoStakeField = number(p.getInt("autoStake", 50));
         col.addView(autoStakeField);
+        col.addView(text("Trades open at once (1-5)", 13, false));
+        autoOpenField = number(p.getInt("autoMaxOpen", 1));
+        col.addView(autoOpenField);
+        col.addView(text("New trades are spaced at least 4 s apart so each result can be read from the "
+            + "balance on its own. The first trade of a session runs alone while the app checks when "
+            + "your broker takes the stake.", 12, false));
         col.addView(text("Stop after this many trades", 13, false));
         autoMaxField = number(p.getInt("autoMax", 100));
         col.addView(autoMaxField);
@@ -183,12 +189,13 @@ public class MainActivity extends Activity {
             .putInt("spanSec", parse(spanField, 120, 10, 86400))
             .putInt("expirySec", parse(expiryField, 30, 1, 3600))
             .putInt("minHit", parse(minHitField, 65, 50, 100))
-            .putInt("intervalMs", parse(intervalField, 1000, 300, 60000))
+            .putInt("intervalMs", parse(intervalField, 1000, 200, 60000))
             .putBoolean("record", recordBox.isChecked())
             .putBoolean("images", imagesBox.isChecked())
             .putBoolean("auto", autoBox.isChecked())
             .putInt("autoStake", parse(autoStakeField, 50, 1, 100000))
             .putInt("autoMax", parse(autoMaxField, 100, 1, 10000))
+            .putInt("autoMaxOpen", parse(autoOpenField, 1, 1, 5))
             .putInt("autoStop", parse(autoStopField, 1000, 1, 1000000))
             .apply();
 
