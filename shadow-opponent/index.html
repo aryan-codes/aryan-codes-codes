@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>body{margin:0}[hidden]{display:none!important}</style>
+<title>Shadow Opponent</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;900&family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap">
+<style>
+/* Layout: one gym-timer "clock" panel up top (phase light, giant digits, live cue card),
+   then two working columns below: round setup + the opponent's cue sheet. */
+:root {
+  --bg: #E9ECF0; --surface: #FFFFFF; --sunk: #F3F5F8; --ink: #14171C; --muted: #5B6271; --line: #D2D7DF;
+  --accent: #C41E2C; --accent-ink: #FFFFFF;
+  --work: #17904D; --warn: #C27A00; --rest: #C41E2C; --prep: #3D63C9;
+  --c-jab: #2F62D6; --c-hit: #C41E2C; --c-miss: #17904D; --c-hook: #7B3FC4; --c-body: #D2600F; --c-combo: #A8780A; --c-open: #0F8C8C;
+  --f-display: "Big Shoulders Display", "Barlow Condensed", Impact, "Arial Narrow", sans-serif;
+  --f-body: "Barlow", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --f-label: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0D1015; --surface: #161A21; --sunk: #1D222B; --ink: #EDF0F4; --muted: #8C94A4; --line: #2A303B;
+  --accent: #EE3D4B; --accent-ink: #FFFFFF;
+  --work: #39D17D; --warn: #FFB224; --rest: #EE3D4B; --prep: #6E93FF;
+  --c-jab: #6E93FF; --c-hit: #EE3D4B; --c-miss: #39D17D; --c-hook: #B48CFF; --c-body: #FF8A3D; --c-combo: #F2C335; --c-open: #2FD3CF;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0D1015; --surface: #161A21; --sunk: #1D222B; --ink: #EDF0F4; --muted: #8C94A4; --line: #2A303B;
+  --accent: #EE3D4B; --accent-ink: #FFFFFF;
+  --work: #39D17D; --warn: #FFB224; --rest: #EE3D4B; --prep: #6E93FF;
+  --c-jab: #6E93FF; --c-hit: #EE3D4B; --c-miss: #39D17D; --c-hook: #B48CFF; --c-body: #FF8A3D; --c-combo: #F2C335; --c-open: #2FD3CF;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1040px; margin: 0 auto; padding-block: 20px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 20px; }
+header.top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font-family: var(--f-display); font-weight: 900; font-size: 34px; letter-spacing: .01em; text-transform: uppercase; margin: 0; line-height: 1; }
+h1 span { color: var(--accent); }
+.tag { color: var(--muted); font-size: 14px; margin: 0; max-width: 46ch; }
+.label { font-family: var(--f-label); font-weight: 600; text-transform: uppercase; letter-spacing: .08em; font-size: 13px; color: var(--muted); }
+
+/* Clock */
+.clock { --phase: var(--prep); background: var(--surface); border: 1px solid var(--line); border-top: 6px solid var(--phase); border-radius: 14px; padding: 18px 20px 20px; display: grid; gap: 14px; transition: border-color .3s; }
+.clock[data-phase="work"] { --phase: var(--work); }
+.clock[data-phase="warn"] { --phase: var(--warn); }
+.clock[data-phase="rest"] { --phase: var(--rest); }
+.clock[data-phase="done"], .clock[data-phase="idle"] { --phase: var(--line); }
+.phase-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.phase { display: flex; align-items: center; gap: 10px; font-family: var(--f-label); font-weight: 700; font-size: 20px; text-transform: uppercase; letter-spacing: .06em; }
+.lamp { width: 14px; height: 14px; border-radius: 50%; background: var(--phase); box-shadow: 0 0 0 4px color-mix(in srgb, var(--phase) 22%, transparent); }
+.rounds { display: flex; gap: 6px; flex-wrap: wrap; }
+.pip { width: 22px; height: 8px; border-radius: 2px; background: var(--sunk); border: 1px solid var(--line); }
+.pip.done { background: var(--muted); border-color: var(--muted); }
+.pip.now { background: var(--phase); border-color: var(--phase); }
+.digits { font-family: var(--f-display); font-weight: 900; font-size: clamp(96px, 26vw, 220px); line-height: .85; text-align: center; font-variant-numeric: tabular-nums; letter-spacing: .01em; color: var(--ink); }
+.bar { height: 6px; background: var(--sunk); border-radius: 3px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--phase); }
+
+.cue { --cc: var(--line); border-radius: 10px; background: var(--sunk); border: 2px solid var(--cc); padding: 12px 16px; display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; align-items: center; min-height: 86px; }
+.cue .glyph { grid-row: span 2; width: 52px; height: 52px; border-radius: 50%; background: var(--cc); display: grid; place-items: center; color: var(--surface); font-family: var(--f-display); font-weight: 900; font-size: 22px; }
+.cue .name { font-family: var(--f-display); font-weight: 900; font-size: 30px; line-height: 1; text-transform: uppercase; color: var(--cc); }
+.cue.idle .name { color: var(--muted); }
+.cue .react { color: var(--ink); min-width: 0; }
+.cue.flash { animation: flash .45s ease-out; }
+@keyframes flash { from { background: color-mix(in srgb, var(--cc) 35%, var(--sunk)); transform: scale(1.015); } to { background: var(--sunk); transform: none; } }
+
+.controls { display: flex; gap: 10px; flex-wrap: wrap; }
+button { font: inherit; cursor: pointer; }
+.btn { font-family: var(--f-label); font-weight: 700; font-size: 18px; text-transform: uppercase; letter-spacing: .06em; border-radius: 10px; padding: 12px 20px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); flex: 1 1 180px; font-size: 22px; }
+.btn:disabled { opacity: .4; cursor: default; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--prep); outline-offset: 2px; }
+.session { font-size: 13px; color: var(--muted); min-height: 1.5em; }
+
+/* Panels */
+.cols { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 20px; align-items: start; }
+@media (max-width: 760px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; display: grid; gap: 16px; }
+.panel h2 { font-family: var(--f-display); font-weight: 900; font-size: 24px; text-transform: uppercase; margin: 0; line-height: 1; }
+.field { display: grid; gap: 6px; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button { font-family: var(--f-label); font-weight: 600; font-size: 15px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--sunk); color: var(--ink); font-variant-numeric: tabular-nums; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.seg button:disabled { opacity: .45; cursor: default; }
+.hint { font-size: 13px; color: var(--muted); margin: 0; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.stepper { display: flex; align-items: center; gap: 8px; }
+.stepper button { width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--line); background: var(--sunk); color: var(--ink); font-size: 20px; line-height: 1; }
+.stepper output { font-family: var(--f-display); font-weight: 900; font-size: 28px; min-width: 2ch; text-align: center; font-variant-numeric: tabular-nums; }
+.check { display: flex; align-items: center; gap: 10px; }
+.check input { width: 20px; height: 20px; accent-color: var(--accent); }
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+.cuelist { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.cuelist li { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.cuelist li:first-child { border-top: 0; padding-top: 0; }
+.cuelist li.off { opacity: .45; }
+.cuelist .dot { width: 30px; height: 30px; border-radius: 50%; background: var(--cc); color: var(--surface); display: grid; place-items: center; font-family: var(--f-display); font-weight: 900; font-size: 14px; grid-row: span 2; align-self: start; }
+.cuelist .t { font-family: var(--f-label); font-weight: 700; font-size: 18px; text-transform: uppercase; letter-spacing: .04em; line-height: 1.1; }
+.cuelist .t small { font-family: var(--f-body); font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--muted); font-size: 13px; margin-left: 6px; }
+.cuelist .d { grid-column: 2 / 4; font-size: 14px; color: var(--ink); min-width: 0; }
+.cuelist .acts { display: flex; gap: 8px; align-items: center; }
+.play { border: 1px solid var(--line); background: var(--sunk); color: var(--ink); border-radius: 8px; padding: 5px 10px; font-family: var(--f-label); font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: .05em; }
+.toggle { width: 20px; height: 20px; accent-color: var(--accent); }
+.note { font-size: 13px; color: var(--muted); margin: 0; }
+@media (max-width: 420px) { .row2 { grid-template-columns: 1fr; } .btn { padding: 11px 14px; } }
+@media (prefers-reduced-motion: reduce) { .cue.flash { animation: none; } .clock { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <h1>Shadow <span>Opponent</span></h1>
+    <p class="tag">A round timer that fights back. Random beeps during each round stand in for an opponent's punches, misses and openings, so your shadowboxing has someone to react to.</p>
+  </header>
+
+  <section class="clock" id="clock" data-phase="idle" aria-live="polite">
+    <div class="phase-row">
+      <div class="phase"><span class="lamp"></span><span id="phaseText">Ready</span></div>
+      <div class="rounds" id="pips" aria-label="Round progress"></div>
+    </div>
+    <div class="digits" id="digits">3:00</div>
+    <div class="bar"><i id="bar"></i></div>
+    <div class="cue idle" id="cue">
+      <div class="glyph" id="cueGlyph">–</div>
+      <div class="name" id="cueName">Waiting for the bell</div>
+      <div class="react" id="cueReact">Press Start. You get a short countdown, then the bell, then the opponent starts working.</div>
+    </div>
+    <div class="controls">
+      <button class="btn primary" id="startBtn">Start</button>
+      <button class="btn" id="skipBtn" disabled>Skip phase</button>
+      <button class="btn" id="resetBtn" disabled>Reset</button>
+    </div>
+    <div class="session" id="session"></div>
+  </section>
+
+  <div class="cols">
+    <section class="panel" aria-labelledby="setupH">
+      <h2 id="setupH">Round setup</h2>
+      <div class="field">
+        <span class="label">Round length</span>
+        <div class="seg" id="segRound"></div>
+      </div>
+      <div class="row2">
+        <div class="field">
+          <span class="label">Rounds</span>
+          <div class="stepper"><button id="rMinus" aria-label="Fewer rounds">−</button><output id="rOut">3</output><button id="rPlus" aria-label="More rounds">+</button></div>
+        </div>
+        <div class="field">
+          <span class="label">Rest</span>
+          <div class="seg" id="segRest"></div>
+        </div>
+      </div>
+      <div class="field">
+        <span class="label">Opponent work rate</span>
+        <div class="seg" id="segRate"></div>
+        <p class="hint" id="rateHint"></p>
+      </div>
+      <div class="field">
+        <span class="label">Opponent style</span>
+        <div class="seg" id="segStyle"></div>
+        <p class="hint" id="styleHint"></p>
+      </div>
+      <label class="check"><input type="checkbox" id="voice"> <span>Call out each cue by voice (learning mode)</span></label>
+      <div class="field">
+        <label class="label" for="vol">Volume</label>
+        <input type="range" id="vol" min="0" max="1" step="0.05">
+      </div>
+      <p class="note">Keep this screen open while you train. The page asks your phone to stay awake, but locking the screen will pause the beeps in most browsers. On iPhone, turn off silent mode to hear sound.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="cuesH">
+      <h2 id="cuesH">The opponent's cues</h2>
+      <p class="hint">Each sound means something different. Learn them with the Play buttons, then start a round with voice callouts on until you react on sound alone. Untick a cue to leave it out.</p>
+      <ul class="cuelist" id="cueList"></ul>
+    </section>
+  </div>
+</div>
+
+<script>
+(() => {
+  const CUES = [
+    { id: 'jab',   glyph: 'J', name: 'Jab coming',     sound: 'one short high beep',   say: 'Jab',        react: 'Slip outside, parry or catch it, then come back with a 1-2.' },
+    { id: 'hit',   glyph: 'H', name: "You're hit",     sound: 'low thud',              say: 'Hit',        react: 'It landed. Don\'t freeze: tuck the chin, step off the line and fire back right away.' },
+    { id: 'miss',  glyph: 'M', name: 'He missed',      sound: 'two rising chirps',     say: 'Missed. Counter', react: 'He swung and whiffed. Punish it now with a hard counter while he\'s out of position.' },
+    { id: 'hook',  glyph: 'K', name: 'Hook coming',    sound: 'falling sweep',         say: 'Hook',       react: 'Roll under it (bend the knees), or high guard and answer with your own hook.' },
+    { id: 'body',  glyph: 'B', name: 'Body shot',      sound: 'two low pulses',        say: 'Body',       react: 'Drop the elbow to block, then counter upstairs with a hook or uppercut.' },
+    { id: 'combo', glyph: 'F', name: 'Flurry',         sound: 'four fast beeps',       say: 'Flurry',     react: 'He\'s unloading. Shell up tight, ride it out, then pivot off to an angle.' },
+    { id: 'open',  glyph: 'O', name: 'Guard dropped',  sound: 'three-note rising run', say: 'Opening',    react: 'He\'s lazy with his hands. Step in and throw your best 3 to 4 punch combination.' },
+  ];
+  const RATES = {
+    easy:   { label: 'Easy',   mean: 9,   min: 4,   hint: 'About 6–7 cues a minute, lots of time to reset.' },
+    medium: { label: 'Medium', mean: 6,   min: 2.5, hint: 'About 10 cues a minute. A steady sparring pace.' },
+    hard:   { label: 'Hard',   mean: 4,   min: 1.8, hint: 'About 15 cues a minute. Expect them back to back.' },
+    war:    { label: 'War',    mean: 2.6, min: 1.3, hint: 'Over 20 a minute. Constant pressure, no breathing room.' },
+  };
+  const STYLES = {
+    balanced: { label: 'Balanced',        hint: 'A bit of everything.',                                         w: { jab: 3, hit: 2, miss: 2, hook: 2, body: 1.5, combo: 1, open: 1.5 } },
+    pressure: { label: 'Pressure',        hint: 'Walks you down: more flurries, body work and hooks.',          w: { jab: 2, hit: 2.5, miss: 1, hook: 2.5, body: 2.5, combo: 2.5, open: 0.7 } },
+    counter:  { label: 'Counter-puncher', hint: 'Waits on you: lots of jabs and misses, few openings handed over.', w: { jab: 4, hit: 1.5, miss: 3, hook: 1, body: 1, combo: 0.5, open: 0.8 } },
+    sloppy:   { label: 'Sloppy',          hint: 'Wild swings and dropped hands. Good for drilling your counters.', w: { jab: 1.5, hit: 1, miss: 3.5, hook: 2.5, body: 1, combo: 1, open: 3 } },
+  };
+  const ROUND_OPTS = [60, 120, 180, 240, 300];
+  const REST_OPTS = [30, 60, 90];
+  const PREP = 10;
+
+  const defaults = { roundSec: 180, rounds: 3, restSec: 60, rate: 'medium', style: 'balanced', voice: true, volume: 0.8,
+    enabled: Object.fromEntries(CUES.map(c => [c.id, true])) };
+  let S = structuredClone(defaults);
+  try { const saved = JSON.parse(localStorage.getItem('shadowOpponent') || 'null'); if (saved) S = { ...S, ...saved, enabled: { ...S.enabled, ...(saved.enabled || {}) } }; } catch (e) {}
+  const save = () => { try { localStorage.setItem('shadowOpponent', JSON.stringify(S)); } catch (e) {} };
+
+  const $ = id => document.getElementById(id);
+  const fmt = s => { s = Math.max(0, Math.ceil(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+
+  /* ---------- Audio ---------- */
+  let ctx, master;
+  function audio() {
+    if (!ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      ctx = new AC(); master = ctx.createGain(); master.connect(ctx.destination);
+    }
+    if (ctx.state === 'suspended') ctx.resume();
+    master.gain.value = S.volume;
+    return ctx;
+  }
+  function tone(t, f0, dur, { type = 'square', f1 = f0, g = 0.3 } = {}) {
+    const o = ctx.createOscillator(), v = ctx.createGain();
+    o.type = type; o.frequency.setValueAtTime(f0, t);
+    if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    v.gain.setValueAtTime(0.0001, t); v.gain.exponentialRampToValueAtTime(g, t + 0.006);
+    v.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(v).connect(master); o.start(t); o.stop(t + dur + 0.02);
+  }
+  let noiseBuf;
+  function noise(t, dur, { freq = 1000, q = 1, type = 'bandpass', g = 0.5 } = {}) {
+    if (!noiseBuf) { noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+    const src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), v = ctx.createGain();
+    src.buffer = noiseBuf; f.type = type; f.frequency.value = freq; f.Q.value = q;
+    v.gain.setValueAtTime(g, t); v.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f).connect(v).connect(master); src.start(t); src.stop(t + dur + 0.02);
+  }
+  function bell(t) {
+    [[1, .35, 2.2], [2.76, .18, 1.4], [5.4, .1, .9], [8.93, .05, .5]].forEach(([r, g, d]) => tone(t, 560 * r, d, { type: 'sine', g }));
+    noise(t, .05, { freq: 4000, g: .3 });
+  }
+  const SOUNDS = {
+    jab:   t => tone(t, 1480, .09, { g: .22 }),
+    hit:   t => { tone(t, 120, .28, { type: 'sine', f1: 42, g: .9 }); noise(t, .14, { type: 'lowpass', freq: 600, g: .9 }); },
+    miss:  t => { noise(t, .12, { freq: 2200, q: .7, g: .25 }); tone(t + .07, 700, .08, { type: 'triangle', f1: 1100, g: .4 }); tone(t + .17, 950, .09, { type: 'triangle', f1: 1600, g: .4 }); },
+    hook:  t => tone(t, 1500, .3, { type: 'sawtooth', f1: 380, g: .2 }),
+    body:  t => { tone(t, 210, .1, { g: .35 }); tone(t + .16, 210, .1, { g: .35 }); },
+    combo: t => { for (let i = 0; i < 4; i++) tone(t + i * .075, 1050, .045, { g: .22 }); },
+    open:  t => { [660, 880, 1320].forEach((f, i) => tone(t + i * .085, f, .11, { type: 'triangle', g: .45 })); },
+    bell:  t => bell(t),
+    bell3: t => { bell(t); bell(t + .45); bell(t + .9); },
+    clap:  t => { noise(t, .04, { freq: 2600, q: 4, g: 1 }); noise(t + .13, .04, { freq: 2600, q: 4, g: 1 }); },
+    tick:  t => tone(t, 880, .07, { type: 'sine', g: .3 }),
+  };
+  function play(name) { audio(); SOUNDS[name](ctx.currentTime + 0.02); }
+  function say(text) {
+    if (!S.voice || !('speechSynthesis' in window)) return;
+    try { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); u.rate = 1.35; u.volume = S.volume; speechSynthesis.speak(u); } catch (e) {}
+  }
+
+  /* ---------- Settings UI ---------- */
+  function seg(el, opts, cur, onPick) {
+    el.innerHTML = '';
+    opts.forEach(([val, label]) => {
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = label;
+      b.setAttribute('aria-pressed', String(val === cur)); b.onclick = () => { onPick(val); save(); renderSettings(); };
+      el.appendChild(b);
+    });
+  }
+  function renderSettings() {
+    const locked = run.active;
+    seg($('segRound'), ROUND_OPTS.map(s => [s, s / 60 + ' min']), S.roundSec, v => S.roundSec = v);
+    seg($('segRest'), REST_OPTS.map(s => [s, s + 's']), S.restSec, v => S.restSec = v);
+    seg($('segRate'), Object.entries(RATES).map(([k, r]) => [k, r.label]), S.rate, v => S.rate = v);
+    seg($('segStyle'), Object.entries(STYLES).map(([k, r]) => [k, r.label]), S.style, v => S.style = v);
+    [...$('segRound').children, ...$('segRest').children].forEach(b => b.disabled = locked);
+    $('rMinus').disabled = locked || S.rounds <= 1; $('rPlus').disabled = locked || S.rounds >= 15;
+    $('rOut').textContent = S.rounds;
+    $('rateHint').textContent = RATES[S.rate].hint;
+    $('styleHint').textContent = STYLES[S.style].hint;
+    $('voice').checked = S.voice; $('vol').value = S.volume;
+    if (!run.active) { $('digits').textContent = fmt(S.roundSec); renderPips(); }
+  }
+  $('rMinus').onclick = () => { S.rounds = Math.max(1, S.rounds - 1); save(); renderSettings(); };
+  $('rPlus').onclick = () => { S.rounds = Math.min(15, S.rounds + 1); save(); renderSettings(); };
+  $('voice').onchange = e => { S.voice = e.target.checked; save(); };
+  $('vol').oninput = e => { S.volume = +e.target.value; if (master) master.gain.value = S.volume; save(); };
+
+  const list = $('cueList');
+  CUES.forEach(c => {
+    const li = document.createElement('li'); li.style.setProperty('--cc', `var(--c-${c.id})`);
+    li.innerHTML = `<span class="dot">${c.glyph}</span>
+      <span class="t">${c.name}<small>${c.sound}</small></span>
+      <span class="acts"><button class="play" type="button" aria-label="Play the ${c.name} sound">Play</button>
+      <input class="toggle" type="checkbox" id="en-${c.id}" aria-label="Include ${c.name}"></span>
+      <span class="d">${c.react}</span>`;
+    const box = li.querySelector('input');
+    box.checked = !!S.enabled[c.id]; li.classList.toggle('off', !box.checked);
+    box.onchange = () => {
+      S.enabled[c.id] = box.checked;
+      if (!CUES.some(x => S.enabled[x.id])) { S.enabled[c.id] = box.checked = true; }
+      li.classList.toggle('off', !box.checked); save();
+    };
+    li.querySelector('.play').onclick = () => { play(c.id); showCue(c); say(c.say); };
+    list.appendChild(li);
+  });
+
+  /* ---------- Engine ---------- */
+  const run = { active: false, paused: false, phases: [], i: 0, start: 0, pauseAt: 0, nextCue: 0, blockUntil: 0, warned: false, lastTick: -1, counts: {} };
+  const now = () => performance.now() / 1000;
+
+  function buildPhases() {
+    const p = [{ kind: 'prep', dur: PREP }];
+    for (let r = 1; r <= S.rounds; r++) {
+      p.push({ kind: 'work', round: r, dur: S.roundSec });
+      if (r < S.rounds) p.push({ kind: 'rest', round: r, dur: S.restSec });
+    }
+    return p;
+  }
+  function gap() {
+    const { mean, min } = RATES[S.rate];
+    const g = min + -Math.log(1 - Math.random()) * (mean - min);
+    return Math.min(g, mean * 3);
+  }
+  function pickCue() {
+    const w = STYLES[S.style].w, pool = CUES.filter(c => S.enabled[c.id]);
+    let total = pool.reduce((a, c) => a + w[c.id], 0), r = Math.random() * total;
+    for (const c of pool) { r -= w[c.id]; if (r <= 0) return c; }
+    return pool[pool.length - 1];
+  }
+  function enterPhase(i, t0) {
+    run.i = i; run.start = t0; run.warned = false; run.lastTick = -1;
+    const ph = run.phases[i];
+    if (!ph) return finish();
+    if (ph.kind === 'work') {
+      play('bell'); run.nextCue = 1.5 + Math.random() * 3; run.blockUntil = 0;
+      idleCue('Round ' + ph.round, 'Opponent is live. Stay loose and listen.');
+    } else if (ph.kind === 'rest') {
+      idleCue('Rest', 'Breathe, shake out the arms. Next round in ' + fmt(ph.dur) + '.');
+    } else {
+      idleCue('Get ready', 'Hands up. The bell starts the round.');
+    }
+    renderPips();
+  }
+  function finish() {
+    run.active = false; run.paused = false; releaseWake();
+    $('clock').dataset.phase = 'done'; $('phaseText').textContent = 'Workout done';
+    $('digits').textContent = '0:00'; $('bar').style.width = '100%';
+    idleCue('Done', `${S.rounds} round${S.rounds > 1 ? 's' : ''} in the books. ${totalCues()} cues reacted to.`);
+    $('startBtn').textContent = 'Start again'; $('skipBtn').disabled = true; $('resetBtn').disabled = false;
+    renderPips(); renderSettings();
+  }
+  function totalCues() { return Object.values(run.counts).reduce((a, b) => a + b, 0); }
+  function fireCue(c) {
+    play(c.id); say(c.say); showCue(c);
+    run.counts[c.id] = (run.counts[c.id] || 0) + 1;
+    renderSession();
+  }
+  function tick() {
+    if (!run.active || run.paused) return;
+    const ph = run.phases[run.i]; if (!ph) return;
+    const t = now() - run.start, left = ph.dur - t;
+    if (left <= 0) {
+      if (ph.kind === 'work') play('bell3');
+      enterPhase(run.i + 1, run.start + ph.dur);
+      return tick();
+    }
+    if (ph.kind !== 'work') {
+      const s = Math.ceil(left);
+      if (s <= 3 && s !== run.lastTick) { run.lastTick = s; play('tick'); }
+    } else {
+      if (left <= 10 && !run.warned && ph.dur > 20) { run.warned = true; play('clap'); }
+      if (t >= run.nextCue) {
+        if (left > 1.2) {
+          const c = pickCue(); fireCue(c);
+          run.nextCue = t + gap() + (c.id === 'combo' ? 1 : 0);
+        } else run.nextCue = Infinity;
+      }
+    }
+    draw(ph, t, left);
+  }
+  function draw(ph, t, left) {
+    const phase = ph.kind === 'work' ? (left <= 10 ? 'warn' : 'work') : ph.kind;
+    $('clock').dataset.phase = phase;
+    $('phaseText').textContent = ph.kind === 'work' ? `Round ${ph.round} of ${S.rounds}` : ph.kind === 'rest' ? 'Rest' : 'Get ready';
+    $('digits').textContent = fmt(left);
+    $('bar').style.width = Math.min(100, (t / ph.dur) * 100) + '%';
+  }
+  function loop() { tick(); if (run.active) requestAnimationFrame(loop); }
+  setInterval(tick, 200); // keeps time moving if animation frames are throttled
+
+  function renderPips() {
+    const el = $('pips'); el.innerHTML = '';
+    const cur = run.active ? run.phases[run.i] : null;
+    const doneAll = !run.active && $('clock').dataset.phase === 'done';
+    for (let r = 1; r <= S.rounds; r++) {
+      const p = document.createElement('span'); p.className = 'pip';
+      if (doneAll || (cur && cur.round && (r < cur.round || (r === cur.round && cur.kind === 'rest')))) p.classList.add('done');
+      if (cur && cur.kind === 'work' && cur.round === r) p.classList.add('now');
+      el.appendChild(p);
+    }
+  }
+  function renderSession() {
+    const parts = CUES.filter(c => run.counts[c.id]).map(c => `${run.counts[c.id]} ${c.name.toLowerCase()}`);
+    $('session').textContent = parts.length ? 'This session: ' + parts.join(' · ') : '';
+  }
+  let flashT;
+  function showCue(c) {
+    const el = $('cue'); el.classList.remove('idle', 'flash'); void el.offsetWidth; el.classList.add('flash');
+    el.style.setProperty('--cc', `var(--c-${c.id})`);
+    $('cueGlyph').textContent = c.glyph; $('cueName').textContent = c.name; $('cueReact').textContent = c.react;
+  }
+  function idleCue(name, text) {
+    const el = $('cue'); el.classList.add('idle'); el.classList.remove('flash'); el.style.removeProperty('--cc');
+    $('cueGlyph').textContent = '–'; $('cueName').textContent = name; $('cueReact').textContent = text;
+  }
+
+  /* ---------- Wake lock ---------- */
+  let wake = null;
+  async function holdWake() { try { if ('wakeLock' in navigator && !wake) { wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', () => wake = null); } } catch (e) {} }
+  function releaseWake() { try { wake && wake.release(); } catch (e) {} wake = null; }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && run.active && !run.paused) holdWake(); });
+
+  /* ---------- Controls ---------- */
+  function start() {
+    audio();
+    if (!run.active) {
+      run.active = true; run.paused = false; run.phases = buildPhases(); run.counts = {}; renderSession();
+      enterPhase(0, now()); play('tick');
+      $('skipBtn').disabled = false; $('resetBtn').disabled = false; $('startBtn').textContent = 'Pause';
+      renderSettings(); holdWake(); requestAnimationFrame(loop);
+    } else if (!run.paused) {
+      run.paused = true; run.pauseAt = now(); $('startBtn').textContent = 'Resume'; $('phaseText').textContent += ' · paused';
+      try { speechSynthesis.cancel(); } catch (e) {}
+      releaseWake();
+    } else {
+      run.start += now() - run.pauseAt; run.paused = false; $('startBtn').textContent = 'Pause';
+      holdWake(); requestAnimationFrame(loop);
+    }
+  }
+  function reset() {
+    run.active = false; run.paused = false; releaseWake();
+    $('clock').dataset.phase = 'idle'; $('phaseText').textContent = 'Ready'; $('bar').style.width = '0';
+    $('startBtn').textContent = 'Start'; $('skipBtn').disabled = true; $('resetBtn').disabled = true;
+    idleCue('Waiting for the bell', 'Press Start. You get a short countdown, then the bell, then the opponent starts working.');
+    run.counts = {}; renderSession(); renderSettings();
+  }
+  $('startBtn').onclick = start;
+  $('resetBtn').onclick = reset;
+  $('skipBtn').onclick = () => {
+    if (!run.active) return;
+    const ph = run.phases[run.i];
+    if (ph.kind === 'work') play('bell3');
+    if (run.paused) { run.paused = false; $('startBtn').textContent = 'Pause'; requestAnimationFrame(loop); }
+    enterPhase(run.i + 1, now());
+    if (run.active) tick();
+  };
+  document.addEventListener('keydown', e => {
+    if (e.code === 'Space' && !/INPUT|BUTTON|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); start(); }
+  });
+
+  renderSettings();
+})();
+</script>
+
+</html>
